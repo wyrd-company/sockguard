@@ -49,7 +49,9 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
-          publish_results: true
+          # Fork: results stay in this repository's code scanning; nothing is
+          # sent to the OpenSSF API until the fork's owner opts in.
+          publish_results: false
 
       - name: Upload to code-scanning
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
