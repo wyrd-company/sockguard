@@ -55,11 +55,11 @@ concurrency:
 jobs:
   self-test:
     name: "Harness self-test"
-    # Fork: the schedule is upstream-only. A scheduled run resolves the
-    # upstream project's published images, so on the fork it would report on
-    # code the fork did not build. Manual dispatch with an explicit
-    # sockguard_image still runs here.
-    if: github.event_name != 'schedule' || github.repository == 'CodesWhat/sockguard'
+    # Fork: upstream-only. The harness resolves and pulls only the upstream
+    # project's images (run-matrix.sh rejects any other sockguard image), so on
+    # the fork it would either report on code the fork did not build or fail
+    # setup. Dispatch has the same limit as the schedule.
+    if: github.repository == 'CodesWhat/sockguard'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -163,7 +163,7 @@ jobs:
   summary:
     name: "Summary"
     needs: matrix
-    if: always() && (github.event_name != 'schedule' || github.repository == 'CodesWhat/sockguard')
+    if: always() && github.repository == 'CodesWhat/sockguard'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
