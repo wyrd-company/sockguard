@@ -47,6 +47,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       "migration",
       "roadmap",
       "security",
+      "symlink-bind-sources",
       "verification",
     ].map((slug) => ({
       url: `${BASE_URL}/docs/${slug}`,

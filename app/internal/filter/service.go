@@ -396,7 +396,7 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 	for _, mount := range req.TaskTemplate.ContainerSpec.Mounts {
 		if mount.VolumeOptions != nil && mount.VolumeOptions.DriverConfig != nil {
 			driverConfig := mount.VolumeOptions.DriverConfig
-			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "service"); denyReason != "" {
+			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "service", lexicalBindSources); denyReason != "" {
 				return denyReason, nil
 			}
 		}

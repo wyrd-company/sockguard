@@ -1,0 +1,106 @@
+---
+title: Symlink bind sources
+description: Fork-only. How the wyrd-company fork resolves symlinks in bind sources before the allowed_bind_mounts check, what the proxy must see for that to work, and the gap that remains between the check and the mount.
+---
+
+This page describes a change that exists only in the
+[wyrd-company fork](https://github.com/wyrd-company/sockguard).
+
+`allowed_bind_mounts` compares a bind source as a string. The daemon mounts it
+through the host filesystem and follows every symlink on the way. A source
+such as `/srv/workspaces/a/link` passes a `/srv/workspaces` entry while
+`link` points at `/`. The fork resolves every symlink in the source and checks
+the result against the allowlist again. A source that passes the string check
+and resolves outside every entry is denied.
+
+## Where sources are resolved
+
+| Endpoint | Fields |
+| --- | --- |
+| `POST /containers/create` | `HostConfig.Binds` sources, `HostConfig.Mounts` entries of type `bind`, `Config.Volumes` keys that Podman reads as binds, `upperdir`/`workdir` overlay options in a `Binds` entry, and the bind device and overlay directories of a `local` volume in `Mounts[].VolumeOptions.DriverConfig` |
+| `POST /libpod/containers/create` | `mounts[]` bind sources, `rootfs`, `overlay_volumes[].source`, `upperdir`/`workdir` options on `overlay_volumes` and `volumes`, `init_path` |
+| `POST /volumes/create`, `POST /libpod/volumes/create` | the bind device and overlay directories of a `local` volume |
+
+These keep the string check only:
+
+- **Service create and update.** A swarm task's source resolves on the node
+  that runs the task, which the proxy cannot see.
+- **Plugin install and upgrade.**
+- **Device paths** (`HostConfig.Devices`, libpod `devices`) and the device
+  node of a `local` volume that mounts a host filesystem type (for example
+  `{"type":"ext4","device":"/dev/sda1"}`). These are not binds, and the usual
+  spellings (`/dev/disk/by-uuid/...`) are symlinks.
+
+## Resolution rules
+
+- Every component is resolved, including intermediate directories and
+  relative targets that contain `..`.
+- Allowlist entries are resolved too, so an entry that is itself a symlink
+  (`/srv/workspaces` -> `/mnt/data/workspaces`) still covers the sources under
+  it.
+- A source that contains no symlink resolves to itself, so an ordinary path
+  that passes the string check passes as before.
+- A part of the source that does not exist yet is kept as written. dockerd
+  creates a missing `HostConfig.Binds` source as a directory at start, so such
+  a request still works.
+- An allowlist that contains `/` allows every source, so nothing is resolved.
+
+Each failure has its own deny reason:
+
+| Reason | Cause |
+| --- | --- |
+| `... resolves to "<path>", which is not allowlisted` | the resolved source is outside every resolved allowlist entry |
+| `... cannot be resolved: dangling symlink at "<path>"` | a symlink on the path points at something that does not exist |
+| `... cannot be resolved: symlink loop at "<path>"` | more than 40 symlinks were followed, the kernel's limit |
+| `... cannot be resolved: permission denied at "<path>"` | the proxy user may not look up a directory on the path |
+| `... cannot be resolved: lookup failed at "<path>"` | any other lookup error, for example a file in the middle of the path |
+
+## Deployment requirement
+
+The proxy resolves paths in its own mount namespace. The result is correct
+only when the proxy sees each allowlisted host path at the same path as the
+host. Mount each allowlisted root into the proxy container read-only, at the
+same path:
+
+```yaml
+services:
+  sockguard:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /srv/workspaces:/srv/workspaces:ro
+```
+
+When the proxy cannot see a path, the source resolves to itself (the
+missing-path rule above) and only the string check applies. No error is
+logged. The proxy image runs as UID 65532 with no capabilities, so every
+directory on the way to a source needs search (`x`) permission for that user.
+Without it the request is denied with `permission denied`.
+
+## Residual gap: check at create, mount at start
+
+The check runs when the container is created. The daemon resolves the source
+again at every start, follows symlinks, and keeps the unresolved path in
+`docker inspect`. This was tested on dockerd 29.9.2: a container was created
+with a real directory as its source, the directory was replaced with a symlink
+to a directory outside it, and `docker start` mounted the outside directory.
+After the symlink was replaced with the real directory again, the next start
+mounted the original directory.
+
+A real directory that is replaced with a symlink after create therefore passes.
+This also applies to every later start and to every restart the daemon does
+by itself under a restart policy. To replace a component, a process needs
+write access to its parent directory:
+
+- A client with write access to the whole allowlisted root can replace any
+  path under it, at any time.
+- A container that has a subfolder of the root mounted read-write can replace
+  anything under that subfolder while it runs, then wait for its next start.
+  It cannot replace the subfolder itself.
+
+The check at create stops a symlink that already exists when the container is
+created: a planted link, or a mount in a configuration file that names a link.
+
+{/* TODO(fork): replace this paragraph with the handling chosen for the
+residual gap, once it is decided. */}
+**Chosen handling:** to be decided. Until then, treat the check as a guard
+against symlinks that exist at create time only.
