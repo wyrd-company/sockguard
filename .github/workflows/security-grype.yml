@@ -435,7 +435,9 @@ jobs:
     # releases. This resolves the latest published release tag so the
     # scan below can pull the real thing.
     name: "Security: Resolve Latest Published Release"
-    if: github.event_name != 'pull_request'
+    # Fork: upstream-only until the fork publishes GitHub releases; without one
+    # this job fails on every scheduled run. grype-published-release needs it.
+    if: github.event_name != 'pull_request' && github.repository == 'CodesWhat/sockguard'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

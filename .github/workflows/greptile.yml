@@ -8,7 +8,8 @@ permissions: {}
 
 jobs:
   summon:
-    if: github.event.label.name == 'second-opinion'
+    # Fork: upstream-only. Needs the upstream organization's Greptile setup.
+    if: github.repository == 'CodesWhat/sockguard' && github.event.label.name == 'second-opinion'
     permissions:
       pull-requests: write
     uses: CodesWhat/.github/.github/workflows/greptile-summon.yml@f356f779ce3bd359a6af1fa7b9b3fc5beaa1e56b  # main, 2026-08-16
