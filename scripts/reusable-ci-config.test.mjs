@@ -301,12 +301,12 @@ function assertBridgesAbsent(source) {
 function assertReleaseBranchTriggers(source) {
   assert.match(
     source,
-    /^ {2}push:\n {4}branches: \[main, 'dev\/\*', 'maintenance\/\*', 'release\/\*'\]$/mu,
+    /^ {2}push:\n {4}branches: \[main, 'dev\/\*', 'maintenance\/\*', 'release\/\*', 'epic\/\*'\]$/mu,
     "CI must run after merges to release branches so release-cut can verify the exact tag target SHA",
   );
   assert.match(
     source,
-    /^ {2}pull_request:\n {4}branches: \[main, 'dev\/\*', 'maintenance\/\*'\]$/mu,
+    /^ {2}pull_request:\n {4}branches: \[main, 'dev\/\*', 'maintenance\/\*', 'epic\/\*'\]$/mu,
     "CI must run on pull requests into every protected integration branch family",
   );
 }
