@@ -27,6 +27,8 @@ concurrency:
 jobs:
   zap-baseline:
     name: "ZAP Baseline: ${{ matrix.name }}"
+    # Fork: upstream-only. The targets are the upstream project's website.
+    if: github.repository == 'CodesWhat/sockguard'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:

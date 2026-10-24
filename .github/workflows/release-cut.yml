@@ -24,6 +24,9 @@ env:
 jobs:
   cut:
     name: "Release: Cut Tag"
+    # Fork: upstream-only. Needs RELEASE_PAT and pushes the v* tag that starts
+    # release-from-tag.yml, so it must not run on any other repository.
+    if: github.repository == 'CodesWhat/sockguard'
     runs-on: ubuntu-24.04
     timeout-minutes: 20  # Includes CI-success polling for target SHA before tagging
     permissions:

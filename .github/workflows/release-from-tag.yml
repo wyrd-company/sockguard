@@ -19,6 +19,9 @@ concurrency:
 jobs:
   verify-ci:
     name: "Release: Verify Prior CI Success"
+    # Fork: upstream-only. Every later job needs this one, so skipping it skips
+    # the Docker Hub, Quay, Homebrew and GHCR publish path for the whole run.
+    if: github.repository == 'CodesWhat/sockguard'
     runs-on: ubuntu-24.04
     timeout-minutes: 20  # Poll loop waits for prior branch CI status on tag SHA
     permissions:

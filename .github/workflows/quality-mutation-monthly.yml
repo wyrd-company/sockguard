@@ -399,7 +399,9 @@ jobs:
   update-badge:
     name: "Update mutation score badge"
     needs: score
-    if: needs.score.outputs.skip != 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    # Fork: upstream-only. It pushes a commit to the active development branch
+    # without review, and the fork's branches are rebased onto upstream.
+    if: github.repository == 'CodesWhat/sockguard' && needs.score.outputs.skip != 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

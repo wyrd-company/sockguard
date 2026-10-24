@@ -26,6 +26,8 @@ permissions: {}
 
 jobs:
   starchart:
+    # Fork: upstream-only. It commits upstream's star history into the website.
+    if: github.repository == 'CodesWhat/sockguard'
     permissions:
       contents: write  # Commit the regenerated pair back to the dispatched branch.
     uses: CodesWhat/.github/.github/workflows/starchart-refresh.yml@11004e42d7d19e86eb3b7777c467ec9522b784e1  # main 2026-08-21
