@@ -1861,8 +1861,13 @@ func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
 	if rawSource, _, hasDest := strings.Cut(bind, ":"); hasDest && strings.HasPrefix(rawSource, ".") {
 		return fmt.Sprintf("container create denied: bind mount source %q is not an absolute path", rawSource)
 	}
-	if source, ok := extractAndValidateBindSource(bind, containerCreateMount{}); ok && !bindPathAllowed(source, p.allowedBindMounts) {
-		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
+	if source, ok := extractAndValidateBindSource(bind, containerCreateMount{}); ok {
+		if !bindPathAllowed(source, p.allowedBindMounts) {
+			return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
+		}
+		if denyReason := denySymlinkedBindSourceReason("container create", "bind mount source", source, p.allowedBindMounts); denyReason != "" {
+			return denyReason
+		}
 	}
 	// A Podman upstream reads the spec's third field as mount options and
 	// takes an overlay's upper and work directory from them, for a named
@@ -1969,7 +1974,7 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 	for _, mount := range hostConfig.Mounts {
 		if mount.VolumeOptions != nil && mount.VolumeOptions.DriverConfig != nil {
 			driverConfig := mount.VolumeOptions.DriverConfig
-			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create"); denyReason != "" {
+			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create", resolveBindSymlinks); denyReason != "" {
 				return denyReason
 			}
 		}
@@ -1999,10 +2004,12 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 			// than skipping it.
 			return fmt.Sprintf("container create denied: bind mount source %q is not an absolute path", mount.Source)
 		}
-		if bindPathAllowed(source, p.allowedBindMounts) {
-			continue
+		if !bindPathAllowed(source, p.allowedBindMounts) {
+			return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 		}
-		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
+		if denyReason := denySymlinkedBindSourceReason("container create", "bind mount source", source, p.allowedBindMounts); denyReason != "" {
+			return denyReason
+		}
 	}
 
 	return ""

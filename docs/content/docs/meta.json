@@ -13,6 +13,7 @@
     "migration",
     "roadmap",
     "security",
+    "symlink-bind-sources",
     "verification"
   ]
 }

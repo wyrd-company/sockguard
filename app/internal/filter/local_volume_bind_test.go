@@ -694,7 +694,7 @@ func TestLocalVolumeDeviceMounts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := denyLocalVolumeBindDeviceReason(tt.driver, tt.options, allowed, "volume create")
+			got := denyLocalVolumeBindDeviceReason(tt.driver, tt.options, allowed, "volume create", resolveBindSymlinks)
 			if got != tt.wantReason {
 				t.Fatalf("denyLocalVolumeBindDeviceReason() = %q, want %q", got, tt.wantReason)
 			}

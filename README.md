@@ -56,6 +56,7 @@
 - **OpenSSF Scorecard**, when enabled, runs on `main` and uploads to this repository's code scanning; it does not publish to the OpenSSF API.
 - **Where the dispositions are pinned.** `scripts/fork-workflow-guards.test.mjs` classifies every workflow file and fails when a workflow is added without a disposition, a guard is dropped, or an active job reads a secret the fork does not have.
 - **Where fork CI is pinned.** The `fork-ci workflow` block of the same test fails when `fork-ci.yml` gains a trigger, an action that is not a SHA-pinned `actions/*` or `docker/*` action, a permission, a secret or a push, or stops running one of its gates.
+- **Symlink bind sources.** Bind sources on container create, libpod container create and volume create are checked again after their symlinks are resolved. The proxy must see each allowlisted host path at the same path. See [Symlink bind sources](docs/content/docs/symlink-bind-sources.mdx).
 - **Badges, install commands and contact addresses** in this README, `SECURITY.md` and the issue template name upstream's releases, registries, website and maintainers. They do not describe this fork's images or reviewers.
 - **Review.** `.github/CODEOWNERS` names the fork's final reviewer. `.github/FUNDING.yml` is empty; to support the project, sponsor [CodesWhat](https://github.com/sponsors/CodesWhat).
 

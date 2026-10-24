@@ -19,6 +19,7 @@ const routes = [
   "/docs/presets",
   "/docs/roadmap",
   "/docs/security",
+  "/docs/symlink-bind-sources",
   "/docs/verification",
 ] as const;
 

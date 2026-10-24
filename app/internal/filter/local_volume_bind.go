@@ -344,7 +344,12 @@ func normalizeLocalVolumeDevice(device string) (string, bool) {
 // three lists the path in the same allowed_bind_mounts. subject names the
 // endpoint for the denial message so it matches the wording each inspector's
 // other denials use.
-func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, allowedBindMounts []string, subject string) string {
+//
+// With symlinks set to resolveBindSymlinks, a bind device and an overlay-style
+// directory are also checked in resolved form (denySymlinkedBindSourceReason).
+// A host-filesystem device node is not: it is mounted as a block device, not
+// bound, and its usual spellings (/dev/disk/by-uuid/...) are symlinks.
+func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, allowedBindMounts []string, subject string, symlinks bindSymlinkMode) string {
 	parsed, local := parseLocalVolumeOptions(driver, options)
 	if !local {
 		return ""
@@ -358,6 +363,11 @@ func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, a
 			}
 			if !bindPathAllowed(source, allowedBindMounts) {
 				return fmt.Sprintf("%s denied: bind mount source %q is not allowlisted", subject, source)
+			}
+			if symlinks == resolveBindSymlinks {
+				if denyReason := denySymlinkedBindSourceReason(subject, "bind mount source", source, allowedBindMounts); denyReason != "" {
+					return denyReason
+				}
 			}
 		}
 	}
@@ -385,6 +395,11 @@ func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, a
 		}
 		if !ok || !bindPathAllowed(source, allowedBindMounts) {
 			return fmt.Sprintf("%s denied: local volume %s path %q is not allowlisted", subject, hostPath.option, source)
+		}
+		if symlinks == resolveBindSymlinks {
+			if denyReason := denySymlinkedBindSourceReason(subject, "local volume "+hostPath.option+" path", source, allowedBindMounts); denyReason != "" {
+				return denyReason
+			}
 		}
 	}
 
