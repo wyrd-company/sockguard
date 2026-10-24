@@ -13,7 +13,6 @@ const repoRoot = resolve(import.meta.dirname, "..");
 const workflowsDir = resolve(repoRoot, ".github/workflows");
 
 const UPSTREAM = "github.repository == 'CodesWhat/sockguard'";
-const SCHEDULE_UPSTREAM = `github.event_name != 'schedule' || ${UPSTREAM}`;
 
 // Secrets an active (unguarded) job may read. GITHUB_TOKEN is always present.
 // The Docker Hub pair only authenticates image pulls and every use is gated on
@@ -37,11 +36,7 @@ const DISPOSITIONS = {
   "quality-integration.yml": { kind: "active" },
   "quality-mutation-monthly.yml": { kind: "partial", guarded: { "update-badge": UPSTREAM } },
   "quality-soak-weekly.yml": { kind: "active" },
-  "quality-tri-tool-conformance.yml": {
-    kind: "partial",
-    guarded: { "self-test": SCHEDULE_UPSTREAM, summary: SCHEDULE_UPSTREAM },
-    skippedByNeeds: ["matrix"],
-  },
+  "quality-tri-tool-conformance.yml": { kind: "disabled", guard: UPSTREAM },
   "release-cut.yml": { kind: "disabled", guard: UPSTREAM },
   "release-from-tag.yml": { kind: "disabled", guard: UPSTREAM },
   "security-grype.yml": {
@@ -102,8 +97,8 @@ function skippedJobs(jobs, guard, guardedNames) {
         continue;
       }
       const direct = guardedNames
-        ? guardedNames.has(job.name) && job.jobIf?.includes(guard.get(job.name))
-        : job.jobIf?.includes(guard.get("*"));
+        ? guardedNames.has(job.name) && guardsJob(job.jobIf, guard.get(job.name))
+        : guardsJob(job.jobIf, guard.get("*"));
       const viaNeeds =
         job.needs.some((n) => skipped.has(n)) && !(job.jobIf && STATUS_FUNCTION.test(job.jobIf));
       if (direct || viaNeeds) {
@@ -113,6 +108,16 @@ function skippedJobs(jobs, guard, guardedNames) {
     }
   }
   return skipped;
+}
+
+// The guard must be one of the `&&` conjuncts of the job's `if:`, and the
+// expression must hold no `||`: `A || guard` still runs the job whenever A is
+// true, which is how a dispatch-only exception would leak back in.
+function guardsJob(jobIf, guard) {
+  if (!jobIf || jobIf.includes("||")) {
+    return false;
+  }
+  return jobIf.split(" && ").some((conjunct) => conjunct.trim() === guard);
 }
 
 function secretsIn(source) {
