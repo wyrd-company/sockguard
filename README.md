@@ -45,6 +45,18 @@
 > [!NOTE]
 > **v2.2.10 is the latest stable release.** It is a security patch on the v2.2 line: native Podman pod creation now refuses `infra_conmon_pid_file`, preventing a caller from selecting the host file conmon writes the infra container's PID to. Ordinary pod creation is unchanged. It also carries everything in 2.2.9. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
+<h2 align="center" id="fork">Fork</h2>
+
+> [!IMPORTANT]
+> **This repository is the wyrd-company fork of [CodesWhat/sockguard](https://github.com/CodesWhat/sockguard).** It tracks upstream v2.2.10 and is rebased onto upstream security releases. Everything below this section describes the upstream project; the fork's own changes are listed in this section and in the pull requests that land them.
+
+- **CI.** `ci-verify.yml` runs on pull requests and pushes to `main` and `epic/*` branches, and the integration, fuzz, soak, benchmark, mutation, Grype and Docker API watch workflows run unchanged.
+- **Skipped on the fork.** Jobs that publish under upstream's name, need secrets this repository does not hold, or point at upstream-owned services are guarded with `github.repository == 'CodesWhat/sockguard'`: the release cut, the release from tag, the star chart refresh, the Greptile second opinion, the `main`-is-released monitor, the ZAP scan of upstream's website, the mutation-score badge commit, the scan of the latest published release image, and the scheduled tri-tool conformance run. Manual tri-tool runs still work with an explicit `sockguard_image`.
+- **OpenSSF Scorecard** runs on `main` and uploads to this repository's code scanning; it does not publish to the OpenSSF API.
+- **Where the dispositions are pinned.** `scripts/fork-workflow-guards.test.mjs` classifies every workflow file and fails when a workflow is added without a disposition, a guard is dropped, or an active job reads a secret the fork does not have.
+- **Badges, install commands and contact addresses** in this README, `SECURITY.md` and the issue template name upstream's releases, registries, website and maintainers. They do not describe this fork's images or reviewers.
+- **Review.** `.github/CODEOWNERS` names the fork's final reviewer. `.github/FUNDING.yml` is empty; to support the project, sponsor [CodesWhat](https://github.com/sponsors/CodesWhat).
+
 <h2 align="center">Contents</h2>
 
 - [Documentation](#documentation)
