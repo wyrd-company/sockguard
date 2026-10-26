@@ -100,7 +100,17 @@ write access to its parent directory:
 The check at create stops a symlink that already exists when the container is
 created: a planted link, or a mount in a configuration file that names a link.
 
-{/* TODO(fork): replace this paragraph with the handling chosen for the
-residual gap, once it is decided. */}
-**Chosen handling:** to be decided. Until then, treat the check as a guard
-against symlinks that exist at create time only.
+**Handling.** This page covers the check at create. A re-check of the bind
+sources at container start and restart is delivered separately. Subpath bind
+sources under an allowlist entry stay allowed. With both checks in place, these
+gaps remain:
+
+- **The start race.** A writer that runs at the same time can replace a
+  component in the few milliseconds between the proxy's check at start and the
+  daemon's mount.
+- **Restarts the daemon does by itself.** A restart under a restart policy does
+  not pass through the proxy. A restart-policy setting controls whether a
+  create request may set one.
+- **A compromised client that can write the whole allowlisted root.** It can
+  replace any component under the root at any time, so neither check binds it.
+  In a Menagerie deployment, this client is Menagerie itself.
