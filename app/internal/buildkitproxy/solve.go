@@ -28,8 +28,9 @@
 //     FrontendAttrs, so a client-supplied Definition alongside a non-empty
 //     Frontend is not meaningfully actionable here and is left to the
 //     frontend/daemon.
-//   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): denied outright
-//     — see checkSolveCache.
+//   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): admitted only
+//     as an exact copy of Exporters[0], denied otherwise — see
+//     checkSolveDeprecatedExporter (fork).
 //   - Session (5): names the session the daemon calls back through for
 //     Auth/Secrets/SSH/FileSync. It must pass the same canonical identifier
 //     validation as POST /session before admission can publish correlated
@@ -428,8 +429,8 @@ func definitionIsExecFree(def *pb.Definition, maxDepth int) bool {
 // fields unenforced would be a real bypass channel for an ostensibly
 // unknown-but-actually-just-old wire shape, not a compatibility nicety.
 func checkSolveCache(req *control.SolveRequest, solvePolicy SolvePolicy) *mediationDenial {
-	if req.GetExporterDeprecated() != "" || len(req.GetExporterAttrsDeprecated()) > 0 {
-		return deny(grpcCodeFailedPrecondition, "buildkit_schema_unsupported", "unsupported BuildKit schema")
+	if d := checkSolveDeprecatedExporter(req); d != nil {
+		return d
 	}
 
 	cache := req.GetCache()

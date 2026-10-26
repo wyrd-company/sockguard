@@ -29,8 +29,9 @@ func TestForkEndpointsBuilderGatewayDenied(t *testing.T) {
 	}
 }
 
-// v0.18.2 mirrors its first exporter into deprecated fields. Isolate this
-// from gateway and entitlement denials with a modern-only positive control.
+// v0.18.2 mirrors its first exporter into the deprecated fields. The mirror
+// is admitted; a mirror that differs from Exporters[0] is still rejected.
+// The modern-only form is the positive control.
 func TestForkEndpointsBuilderExporterWireShape(t *testing.T) {
 	policy := Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true, AllowedExporters: []string{"moby"}}}}
 	request := &control.SolveRequest{Ref: "sample-build", Session: testBuildkitSessionID,
@@ -40,8 +41,12 @@ func TestForkEndpointsBuilderExporterWireShape(t *testing.T) {
 	}
 	request.ExporterDeprecated = "moby"
 	request.ExporterAttrsDeprecated = map[string]string{"name": "sample"}
+	if _, denial := evaluateSolveRequest(mustMarshal(t, request), policy); denial != nil {
+		t.Fatalf("SDK mirror of Exporters[0] rejected: %+v", denial)
+	}
+	request.ExporterAttrsDeprecated = map[string]string{"name": "other"}
 	_, denial := evaluateSolveRequest(mustMarshal(t, request), policy)
 	if denial == nil || denial.reasonCode != "buildkit_schema_unsupported" || denial.code != grpcCodeFailedPrecondition {
-		t.Fatalf("SDK compatibility fields: got %+v; want schema unsupported", denial)
+		t.Fatalf("mismatched deprecated fields: got %+v; want schema unsupported", denial)
 	}
 }
