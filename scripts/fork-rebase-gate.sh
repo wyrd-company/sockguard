@@ -19,10 +19,12 @@ if ((${#tests[@]} == 0)); then
   exit 1
 fi
 
-node --test --experimental-strip-types "${tests[@]}"
+# Reports go to stderr: the upkeep hands a failed gate to the board with the
+# tail of its stderr, and node and zizmor both report findings on stdout.
+node --test --experimental-strip-types "${tests[@]}" >&2
 
 if command -v zizmor >/dev/null 2>&1; then
-  zizmor --offline --config .github/zizmor.yml .github/workflows .github/actions
+  zizmor --offline --config .github/zizmor.yml .github/workflows .github/actions >&2
 else
   echo "fork-rebase-gate: zizmor is not on PATH; the workflow-security audit did not run" >&2
 fi

@@ -38,7 +38,7 @@ function fixture({ tests = ["fork-a.test.mjs", "fork-b.test.mjs"], node = 0, ziz
     }
     writeFileSync(
       join(bin, name),
-      `#!/bin/bash\nprintf '${name} %s\\n' "$*" >> "${log}"\nexit ${status}\n`,
+      `#!/bin/bash\nprintf '${name} %s\\n' "$*" >> "${log}"\necho "${name} reported"\nexit ${status}\n`,
     );
     chmodSync(join(bin, name), 0o755);
   };
@@ -93,9 +93,19 @@ describe("fork-rebase-gate.sh", () => {
     assert.doesNotMatch(result.calls, /^zizmor/mu);
   });
 
+  it("writes the test report to stderr, which the upkeep hands to the board", () => {
+    const fx = fixture({ node: 1 });
+    const result = run(fx);
+    assert.match(result.stderr, /^node reported$/mu);
+    assert.doesNotMatch(result.stdout, /node reported/u);
+  });
+
   it("fails when zizmor reports a finding", () => {
     const fx = fixture({ zizmor: 13 });
-    assert.equal(run(fx).status, 13);
+    const result = run(fx);
+    assert.equal(result.status, 13);
+    assert.match(result.stderr, /^zizmor reported$/mu);
+    assert.doesNotMatch(result.stdout, /zizmor reported/u);
   });
 
   it("says the audit did not run when zizmor is absent", () => {
