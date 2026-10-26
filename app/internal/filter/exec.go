@@ -53,7 +53,7 @@ type ExecOptions struct {
 	// characters, "**" matches any sequence. A command is allowed when its
 	// token count equals an entry's and every token matches the glob at that
 	// position. Empty (the default) denies every exec unless AllowBlindWrites
-	// is also set.
+	// or AllowAnyCommand is also set.
 	AllowedCommands [][]string
 	// AllowedEnvVars, when non-empty, restricts the exec-create Env array to
 	// these variable names. Matching is by name only — the substring before
@@ -85,7 +85,10 @@ type ExecOptions struct {
 	// has no effect: an operator who pinned commands is inspecting the body,
 	// so the blind-write concern the flag addresses does not apply.
 	AllowBlindWrites bool
-	InspectStart     ExecInspectFunc
+	// AllowAnyCommand is the per-policy counterpart of AllowBlindWrites for
+	// exec only (request_body.exec.allow_any_command). See argvGateLifted.
+	AllowAnyCommand bool
+	InspectStart    ExecInspectFunc
 	// InspectStartLibpod is InspectStart's counterpart for the libpod
 	// exec-start path (POST /libpod/exec/{id}/start). It exists as a
 	// separate field — rather than reusing InspectStart for both routes —
@@ -110,6 +113,7 @@ type execPolicy struct {
 	deniedEnvVars      []string
 	allowedEnvValues   map[string][]string
 	allowBlindWrites   bool
+	allowAnyCommand    bool
 	inspectStart       ExecInspectFunc
 	inspectStartLibpod ExecInspectFunc
 }
@@ -182,6 +186,7 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 		deniedEnvVars:      normalizeExecEnvNames(opts.DeniedEnvVars),
 		allowedEnvValues:   normalizeExecEnvValues(opts.AllowedEnvValues),
 		allowBlindWrites:   opts.AllowBlindWrites,
+		allowAnyCommand:    opts.AllowAnyCommand,
 		inspectStart:       opts.InspectStart,
 		inspectStartLibpod: opts.InspectStartLibpod,
 	}
@@ -311,7 +316,7 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 }
 
 func (p execPolicy) denyReason(result ExecInspectResult) string {
-	if len(p.allowedCommands) == 0 && !p.allowBlindWrites {
+	if len(p.allowedCommands) == 0 && !p.argvGateLifted() {
 		return "exec denied: no commands are allowlisted"
 	}
 	if !p.allowPrivileged && result.Privileged {
@@ -324,7 +329,7 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 		return reason
 	}
 	if len(p.allowedCommands) == 0 {
-		// allowBlindWrites is true here (the guard above would have returned
+		// argvGateLifted is true here (the guard above would have returned
 		// otherwise): no argv allowlist is configured, but every other gate —
 		// privileged, root user, env — was just checked and passed, so this is
 		// exactly the "acknowledged blind write" the flag documents, not an

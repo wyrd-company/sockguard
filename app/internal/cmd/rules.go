@@ -718,7 +718,7 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// Shared request_body.exec config covers both the Docker-compat and
 		// libpod exec paths (#148 design doc decision C3) — same field,
 		// same condition.
-		return len(requestBody.Exec.AllowedCommands) > 0
+		return requestBody.Exec.ArgvGateConfigured()
 	case "/containers/sockguard-test/update", "/containers/sockguard-test/archive", "/images/create", "/images/load", "/build", "/libpod/build":
 		return true
 	case "/volumes/create", "/networks/create", "/networks/sockguard-test/connect", "/networks/sockguard-test/disconnect", "/secrets/create", "/configs/create", "/services/create", "/services/sockguard-test/update", "/swarm/init", "/plugins/pull", "/plugins/sockguard-test/upgrade":

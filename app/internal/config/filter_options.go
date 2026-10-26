@@ -200,6 +200,7 @@ func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 		AllowedEnvVars:   c.AllowedEnvVars,
 		DeniedEnvVars:    c.DeniedEnvVars,
 		AllowedEnvValues: c.AllowedEnvValues,
+		AllowAnyCommand:  c.AllowAnyCommand,
 	}
 }
 
