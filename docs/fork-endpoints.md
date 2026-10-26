@@ -26,11 +26,13 @@ Sockguard build with those rules.
 
 Two results limit that:
 
-- **The devcontainer build does not work through Sockguard's mediated BuildKit
-  connection at this base.** It needs LLBBridge, which is denied on both
-  tunnels. The builder SDK's legacy exporter fields are a second, independent
-  incompatibility. Adding HTTP rules cannot fix either. The build-path decision
-  below addresses both.
+- **The devcontainer build needs a fork setting and the fork's exporter rule,
+  not HTTP rules alone.** It needs LLBBridge on `/grpc`, which is denied
+  unless the client's profile sets
+  `request_body.buildkit.llb_bridge.allow_uninspected_passthrough`. The
+  builder SDK's legacy exporter fields are a second, independent
+  incompatibility, which the fork's exporter rule resolves. Adding HTTP rules
+  cannot fix either. See [Build-path decision](#build-path-decision).
 - **Default mount-path redaction hides the object roots Compose tracks.**
   See [Compose inventory](#compose-inventory).
 
@@ -152,7 +154,7 @@ build callback can execute.
 | Tunnel / service | Methods reached or offered by these paths | Sockguard treatment at this base |
 | --- | --- | --- |
 | `/grpc`, `moby.buildkit.v1.Control` | ListWorkers for Build; Solve and Status for all solves; Info when SDK Wait is explicitly used (not called by audited DCB solve path) | Known, mediated; each has its own policy switch. Worker/info replies are filtered |
-| `/grpc`, `moby.buildkit.v1.frontend.LLBBridge` | Ping; ResolveImageConfig for base metadata; ResolveSourceMeta during LLB source resolution when used; Solve for upstream Dockerfile and authored graph; Return for result/error | All denied, independent of HTTP rule or policy switches |
+| `/grpc`, `moby.buildkit.v1.frontend.LLBBridge` | Ping; ResolveImageConfig for base metadata; ResolveSourceMeta during LLB source resolution when used; Solve for upstream Dockerfile and authored graph; Return for result/error | Denied by default. Forwarded without inspection when the client's profile sets `llb_bridge.allow_uninspected_passthrough`; see [Build-path decision](#build-path-decision) |
 | `/session`, `moby.filesync.v1.FileSync` | DiffCopy for local contexts; SDK also advertises TarStream | DiffCopy mediated if enabled; TarStream denied and stripped from advertisement |
 | `/session`, `moby.filesync.v1.Auth` | Credentials, FetchToken, GetTokenAuthority, VerifyTokenAuthority advertised by `pkg/buildkit/auth.go`; daemon selects calls for registry auth | Mediated; enable auth and registry/realm/scope constraints |
 | `/session`, `moby.filesync.v1.FileSend` | DiffCopy when local/archive exporter output is requested | Optional, mediated if enabled; not needed for daemon moby export |
@@ -170,16 +172,24 @@ Sockguard `app/internal/buildkitproxy/registry.go:170` returns Deny for any
 unregistered `(endpoint, service, method)` triple. The registry has no LLBBridge
 entry for **either** EndpointGRPC or EndpointSession; the explicit denied
 examples at `registry.go:214` document the session side but are not the registry.
-`policy.go:101` (`Allowed`) also has no LLBBridge branch under either endpoint.
-`bridge.go:226` classifies before forwarding and its default branch returns
-gRPC PermissionDenied (`buildkit_method_denied`); no operator setting overrides
-that branch. HTTP rules only admit the outer upgrade. Literal gRPC HTTP paths
-also cannot substitute for it (`app/internal/filter/buildkit.go:92`).
+`policy.go:104` (`Allowed`) also has no LLBBridge branch under either endpoint.
+`bridge.go:233` classifies before forwarding and its default branch returns
+gRPC PermissionDenied (`buildkit_method_denied`). HTTP rules only admit the
+outer upgrade. Literal gRPC HTTP paths also cannot substitute for it
+(`app/internal/filter/buildkit.go:92`).
 
-`TestForkEndpointsBuilderGatewayDenied` proves both classifications and policy
-denials with supported Control/session switches enabled, using the unmodified
-epic-base implementation. `TestForkEndpointsCandidatePolicy` proves only the
-outer HTTP admission. No production guard is added or weakened.
+The only path that admits LLBBridge is the fork's per-profile setting
+`llb_bridge.allow_uninspected_passthrough`. `bridge.go:226` checks it before
+`Classify`, through `llbBridgePassthroughAdmitted` (`llbbridge.go`): it admits
+only `/grpc`, only the LLBBridge method names that `DeniedExamples` lists, and
+only for a profile that sets it. The registry and `Allowed` are unchanged.
+
+`TestForkEndpointsBuilderGatewayDenied` proves the classifications, policy
+denials and passthrough refusal with supported Control/session switches enabled
+and the setting off. `TestForkEndpointsBuilderGatewayPassthroughOnGRPC` proves
+that with the setting on the same methods pass on `/grpc` only, and an unknown
+method does not. `TestForkEndpointsCandidatePolicy` proves only the outer HTTP
+admission.
 
 ### What the gateway carries and what inspection would require
 
@@ -222,20 +232,26 @@ cannot cover these inner operations.
 ### Independent exporter incompatibility
 
 BuildKit SDK `client/solve.go:258-275` sends both modern Exporters and the first
-exporter's deprecated fields. Sockguard `solve.go:428` rejects nonempty
+exporter's deprecated fields. Upstream Sockguard rejects nonempty
 ExporterDeprecated/ExporterAttrsDeprecated with FailedPrecondition and
-`buildkit_schema_unsupported`. `TestForkEndpointsBuilderExporterWireShape`
-reconstructs the daemon moby-export shape and proves that denial, with the
-same request's modern-only form as an admitted control. This affects every
-`SolveDockerfile` with an exporter, including Compose service builds;
-bypassing LLBBridge alone is insufficient.
+`buildkit_schema_unsupported`. This affects every `SolveDockerfile` with an
+exporter, including Compose service builds, so admitting LLBBridge alone is
+not enough.
+
+The fork's rule (`solve.go:430`, `checkSolveDeprecatedExporter` in
+`solve_exporter_compat.go`) admits the deprecated fields only when they equal
+`Exporters[0]` in type and attributes, and keeps the denial for every other
+shape. A current daemon reads them only when `Exporters` is empty.
+`TestForkEndpointsBuilderExporterWireShape` reconstructs the daemon
+moby-export shape: the modern-only form and the SDK mirror are admitted, and a
+mirror with different attributes is rejected.
 
 ### Entitlements
 
 Menagerie must keep daemon BuildKit `security.insecure` and `network.host`
 entitlements disabled. Keep proxy `request_body.build.allow_host_network`
 false too. Sockguard always rejects `security.insecure`; network.host is
-conditional on that proxy flag (`solve.go:298`). DCB does not request either
+conditional on that proxy flag (`solve.go:304`). DCB does not request either
 through its current SolveOptions. Container exception approval must not enable
 BuildKit host-network or insecure entitlements. A daemon configuration check
 and a live rejection probe remain acceptance work; this report does not claim
@@ -245,13 +261,19 @@ to have read or changed the daemon configuration.
 
 The fork adds two changes:
 
-1. **An opt-in LLBBridge passthrough on `/grpc`.** A new setting, default off
-   and set per client profile, forwards LLBBridge methods on the control
-   connection without inner inspection. Every outer Control/Solve check stays:
-   `security.insecure` is always denied and host networking is denied.
+1. **An opt-in LLBBridge passthrough on `/grpc`.**
+   `clients.profiles[].request_body.buildkit.llb_bridge.allow_uninspected_passthrough`,
+   default `false`, forwards LLBBridge methods on the control connection
+   without inner inspection. It is refused at the top level of `request_body`
+   and requires `control.solve.allow` on the same profile. Every outer
+   Control/Solve check stays: `security.insecure` is always denied and host
+   networking is denied unless `request_body.build.allow_host_network` is set.
 2. **A narrow exporter compatibility fix.** Control/Solve accepts the
    deprecated exporter fields only when they equal `Exporters[0]`, and rejects
    them otherwise.
+
+The operator reference is
+[BuildKit LLBBridge passthrough](content/docs/buildkit-llb-bridge.mdx).
 
 DCB stays at `0.2.0`; the build uses its normal client gateway graph.
 
@@ -264,10 +286,9 @@ The outer entitlement checks bound what that graph can request from the
 daemon; they do not inspect it. Enable the passthrough only on the Menagerie
 profile.
 
-`TestForkEndpointsBuilderGatewayDenied` and
-`TestForkEndpointsBuilderExporterWireShape` pin the denials at this base. The
-LLBBridge passthrough and exporter-compatibility task (#1814) updates them when
-it merges.
+`TestForkEndpointsBuilderGatewayDenied` pins the default denial,
+`TestForkEndpointsBuilderGatewayPassthroughOnGRPC` pins the opt-in passthrough,
+and `TestForkEndpointsBuilderExporterWireShape` pins the exporter rule.
 
 ## Compose inventory
 
@@ -512,9 +533,15 @@ pins the ownership filter result for DCB's lookup filters.
 `TestForkCommandContainerEndpointsReadExfiltrationAck` pins which
 command-container routes need the read-exfiltration acknowledgment.
 `TestForkEndpointsBuilderGatewayDenied` pins the gateway/unknown-method denial
-on both tunnels. `TestForkEndpointsBuilderExporterWireShape` pins the SDK wire
-incompatibility with an isolated positive control. Existing mediation and body
-suites supply deeper protocol tests. These tests add no production guard.
+on both tunnels with the passthrough off, and
+`TestForkEndpointsBuilderGatewayPassthroughOnGRPC` pins its scope with the
+passthrough on. `TestForkEndpointsBuilderExporterWireShape` pins the SDK wire
+shape, its admission and a mismatched variant, with an isolated positive
+control. The passthrough and exporter guards themselves are tested in
+`llbbridge_test.go`, `solve_exporter_compat_test.go`,
+`config/buildkit_llbbridge_test.go` and
+`cmd/llbbridge_profile_integration_test.go`. Existing mediation and body suites
+supply deeper protocol tests.
 
 The measured Compose run used a local build of this branch, not a released
 image, and no BuildKit build. A successful build/up/stop/rebuild through the
