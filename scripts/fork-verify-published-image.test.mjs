@@ -26,9 +26,10 @@ const FORK = "wyrd-company/sockguard";
 
 // Every test states GITHUB_REPOSITORY itself, set or unset, so the result does
 // not depend on the runner that runs it.
+// null and undefined both mean unset.
 function baseEnv(repository) {
   const { GITHUB_REPOSITORY: _ignored, ...env } = process.env;
-  return repository === undefined ? env : { ...env, GITHUB_REPOSITORY: repository };
+  return repository == null ? env : { ...env, GITHUB_REPOSITORY: repository };
 }
 
 function dryRun(repository) {
@@ -162,7 +163,8 @@ describe("fork-verify-published-image.sh", () => {
   });
 
   it("verifies the same fork image and signer with no GITHUB_REPOSITORY", () => {
-    const result = runChecks({}, undefined);
+    // null, not undefined: undefined would take runChecks' default, the fork.
+    const result = runChecks({}, null);
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.calls, ATTESTATION);
   });
