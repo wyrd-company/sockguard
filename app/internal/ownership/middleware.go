@@ -1178,7 +1178,8 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	if err != nil {
 		return err
 	}
-	filterKey := ownerFilterKey(filter.NormalizePath(r.URL.Path))
+	normPath := filter.NormalizePath(r.URL.Path)
+	filterKey := ownerFilterKey(normPath)
 	label := labelKey + "=" + owner
 	// Client-supplied values under this key are dropped: Swarm's control-plane
 	// lists fold `label` into a map[string]string over a randomly-ordered
@@ -1198,6 +1199,9 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 		if !slices.Contains(values, selector) {
 			values = append(values, selector)
 		}
+	}
+	if forkOwnershipKeepsClientLabels(normPath) {
+		values = forkOwnershipAppendClientLabels(values, filters[filterKey], labelKey)
 	}
 	filters[filterKey] = values
 	encoded, err := json.Marshal(filters)
