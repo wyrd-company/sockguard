@@ -1171,7 +1171,7 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/containers/json?filters=%7B%22label%22%3A%5B%22existing%3D1%22%5D%7D", nil)
+	req := httptest.NewRequest(http.MethodGet, "/services?filters=%7B%22label%22%3A%5B%22existing%3D1%22%5D%7D", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
