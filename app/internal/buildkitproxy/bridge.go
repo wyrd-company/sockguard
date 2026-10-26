@@ -223,6 +223,13 @@ func (b *bridge) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if llbBridgePassthroughAdmitted(b.legs.endpoint, service, method, b.policy) {
+		// Fork: opt-in uninspected LLBBridge passthrough (llbbridge.go).
+		b.audit(service, method, Passthrough, "", llbBridgeUninspectedAttr())
+		b.forward(w, r, service, method)
+		return
+	}
+
 	disposition := Classify(b.legs.endpoint, service, method)
 	switch disposition {
 	case Mediate, Passthrough:
