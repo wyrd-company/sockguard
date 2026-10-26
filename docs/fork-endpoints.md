@@ -43,15 +43,17 @@ The research does not change proxy code or the Menagerie design.
 
 Evidence inputs:
 
-- Sockguard base: `e34354de79023070a29fa5d23f65d42e4ca76eff`.
-- devcontainer-builder (DCB): tag `0.2.0`
-  (`c432d28f97ce18f07f8e032187ab7c211e8a6595`), the version Menagerie pins in
-  `go.mod`. Paths below are relative to that tree.
-- Menagerie `main`: `d28e490f2f6f8c208923632f8d31d8aa0bb78e86`,
-  `/workspaces/tools/menagerie`; caller `backend/internal/devcontainer/runtime.go`;
-  risk `docs/risks/buildkit-traffic-not-inspectable.yml`.
-- DCB `go.mod`: Docker SDK `v28.5.2+incompatible`, BuildKit `v0.18.2`. SDK paths
-  below are relative to those versions in `/go/pkg/mod`.
+- Sockguard base: `d90912865a73363a4f0683603aaa4fb5e6205c85`.
+- devcontainer-builder (DCB): `github.com/wyrd-company/devcontainer-builder`
+  tag `0.2.0` (`c432d28f97ce18f07f8e032187ab7c211e8a6595`), the version
+  Menagerie pins in `go.mod`. DCB paths below are relative to that tree.
+- Menagerie: `github.com/wyrd-company/menagerie` `main` at
+  `d28e490f2f6f8c208923632f8d31d8aa0bb78e86`; caller
+  `backend/internal/devcontainer/runtime.go`; risk
+  `docs/risks/buildkit-traffic-not-inspectable.yml`.
+- DCB `go.mod`: Docker SDK `github.com/docker/docker@v28.5.2+incompatible`,
+  BuildKit `github.com/moby/buildkit@v0.18.2`. SDK paths below are relative to
+  those module versions.
 - Docker Engine 29.9.2 (API 1.56) for the measured Compose run.
 
 ## Engine calls
