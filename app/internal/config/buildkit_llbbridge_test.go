@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -119,5 +121,36 @@ func TestBuildkitLLBBridgeRequiresSolveAllow(t *testing.T) {
 	want := "clients.profiles[0].request_body.buildkit.llb_bridge.allow_uninspected_passthrough requires clients.profiles[0].request_body.buildkit.control.solve.allow: true"
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("Validate() = %v, want it to contain %q", err, want)
+	}
+}
+
+// The YAML example on the fork's docs page loads, validates, and turns the
+// passthrough on for its profile.
+func TestBuildkitLLBBridgeDocsExampleValidates(t *testing.T) {
+	page, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "content", "docs", "buildkit-llb-bridge.mdx"))
+	if err != nil {
+		t.Fatalf("read docs page: %v", err)
+	}
+	_, rest, ok := strings.Cut(string(page), "```yaml\n")
+	if !ok {
+		t.Fatal("docs page has no yaml block")
+	}
+	example, _, ok := strings.Cut(rest, "```")
+	if !ok {
+		t.Fatal("docs page yaml block is not closed")
+	}
+	cfg, err := LoadBytes([]byte(example))
+	if err != nil {
+		t.Fatalf("LoadBytes(docs example): %v", err)
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate(docs example): %v", err)
+	}
+	if len(cfg.Clients.Profiles) != 1 {
+		t.Fatalf("docs example profiles = %d, want 1", len(cfg.Clients.Profiles))
+	}
+	profile := cfg.Clients.Profiles[0]
+	if !profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build).LLBBridge.AllowUninspectedPassthrough {
+		t.Fatal("docs example profile does not turn the passthrough on")
 	}
 }
