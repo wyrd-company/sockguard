@@ -1,0 +1,204 @@
+name: "Fork: Release Image"
+run-name: "Fork: Release Image — ${{ github.ref_name }}"
+
+# The wyrd-company fork's own release. It publishes one multi-arch image to
+# ghcr.io/wyrd-company/sockguard and nothing else: no Docker Hub, no Quay, no
+# binaries, no Homebrew. Upstream's release-from-tag.yml stays a disabled
+# template; this file replaces it on the fork.
+#
+# Version scheme: <upstream X.Y.Z>-wyrd.<N>, with no `v`. X.Y.Z is the stable
+# upstream release the fork line is built on; N counts fork releases on that
+# base, starting at 1, and resets to 1 when the fork is rebased onto a new
+# upstream release (2.2.10-wyrd.2, then 2.2.11-wyrd.1). Without a `v` the tag
+# can never match upstream's `v*` release trigger.
+#
+# The tag is the release gate. scripts/fork-release-tag.sh refuses it before
+# anything is built unless its commit is on the fork line (the default
+# branch), the newest stable upstream release in its history is the tag's
+# base, the counter is the next one, and no fork tag on a newer base exists.
+#
+# Only GitHub-owned actions (actions/*, docker/*) and the Go toolchain inside
+# the Dockerfile run here. The pins match the ones upstream's workflows use,
+# and scripts/fork-workflow-guards.test.mjs fails when they drift apart, so an
+# upstream rebase that bumps an action also flags this file.
+
+on:
+  push:
+    tags: ['[0-9]*.[0-9]*.[0-9]*-wyrd.[0-9]*']
+  # Reruns the release for an existing tag: `gh workflow run fork-release.yml
+  # --ref <tag>`. A branch ref is refused by the verify job.
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/wyrd-company/sockguard
+  PLATFORMS: linux/amd64,linux/arm64
+  UPSTREAM_URL: https://github.com/CodesWhat/sockguard.git
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: "Fork Release: Verify Tag"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify release tag
+        id: tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          FORK_LINE_REF: refs/remotes/origin/${{ github.event.repository.default_branch }}
+          FORK_UPSTREAM_URL: ${{ env.UPSTREAM_URL }}
+        run: |
+          set -euo pipefail
+          if [ "${REF_TYPE}" != "tag" ]; then
+            echo "::error::Run this workflow on a release tag, not a ${REF_TYPE}."
+            exit 1
+          fi
+          bash scripts/fork-release-tag.sh "${RELEASE_TAG}"
+
+  image:
+    name: "Fork Release: Build and Push Image"
+    needs: [verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No QEMU: the Dockerfile builds on $BUILDPLATFORM and cross-compiles,
+      # and the final stage runs no instruction on the target platform.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ needs.verify.outputs.version }}
+            type=raw,value=latest
+          labels: |
+            maintainer=wyrd-company
+
+      - name: Compute build date
+        id: build_date
+        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # No build cache: a cache restored into a publishing job is a poisoning
+      # path, and this job publishes.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          push: true
+          platforms: ${{ env.PLATFORMS }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.verify.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.build_date.outputs.date }}
+          sbom: true
+          provenance: mode=max
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  verify-image:
+    name: "Fork Release: Verify Published Image (${{ matrix.runner }})"
+    needs: [verify, image]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Verify image, version, labels and attestation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          SOURCE: https://github.com/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ref="${IMAGE}@${DIGEST}"
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+          # Both platforms are in the published index.
+          platforms="$(docker buildx imagetools inspect "${ref}" --format '{{json .Manifest}}' |
+            jq -r '[.manifests[].platform | select(.os != "unknown") | "\(.os)/\(.architecture)"] | sort | join(",")')"
+          if [ "${platforms}" != "${PLATFORMS}" ]; then
+            echo "::error::Published platforms '${platforms}', expected '${PLATFORMS}'."
+            exit 1
+          fi
+
+          # The tag resolves to the digest this run pushed.
+          tagged="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+          if [ "${tagged}" != "${DIGEST}" ]; then
+            echo "::error::${IMAGE}:${VERSION} is ${tagged}, expected ${DIGEST}."
+            exit 1
+          fi
+
+          # This runner's platform runs and reports the release version.
+          docker pull --quiet "${ref}"
+          reported="$(docker run --rm "${ref}" version -o json | jq -r .version)"
+          if [ "${reported}" != "${VERSION}" ]; then
+            echo "::error::Image reports version '${reported}', expected '${VERSION}'."
+            exit 1
+          fi
+
+          # Labels name the fork, not upstream.
+          source_label="$(docker image inspect "${ref}" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')"
+          if [ "${source_label}" != "${SOURCE}" ]; then
+            echo "::error::Source label '${source_label}', expected '${SOURCE}'."
+            exit 1
+          fi
+          if docker image inspect "${ref}" --format '{{ json .Config.Labels }}' | grep -qi codeswhat; then
+            echo "::error::An image label names upstream."
+            exit 1
+          fi
+
+          gh attestation verify "oci://${ref}" --owner "${GITHUB_REPOSITORY_OWNER}"

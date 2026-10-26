@@ -53,6 +53,8 @@ const DISPOSITIONS = {
   "security-scorecard.yml": { kind: "active" },
   "security-zap-baseline.yml": { kind: "disabled", guard: UPSTREAM },
   "starchart.yml": { kind: "disabled", guard: UPSTREAM },
+  // Fork-owned. Its own checks are in the "fork release workflow" block below.
+  "fork-release.yml": { kind: "fork" },
 };
 
 // A status function in a job's own `if:` overrides skip propagation from a
@@ -351,5 +353,339 @@ describe("fork-ci workflow", () => {
       jobs.get("node").includes("run: npm test"),
       `${FILE}: job node no longer runs npm test`,
     );
+  });
+});
+
+// The fork's own release workflow. It is the one workflow here that publishes,
+// so it is held to the release freeze's terms: GitHub-owned actions only, one
+// registry, no upstream names in the image, and a tag gate nothing can skip.
+const { spawnSync } = await import("node:child_process");
+const { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+const { tmpdir } = await import("node:os");
+
+describe("fork release workflow", () => {
+  const FILE = "fork-release.yml";
+  const RELEASE_STEP = "Verify release tag";
+  const IMAGE_CHECK_STEP = "Verify image, version, labels and attestation";
+  const source = () => readWorkflow(FILE);
+
+  function stepScript(stepName) {
+    const workflow = source();
+    const stepStart = workflow.indexOf(`      - name: ${stepName}\n`);
+    assert.notEqual(stepStart, -1, `${FILE}: step ${stepName} not found`);
+    const runStart = workflow.indexOf("        run: |\n", stepStart);
+    assert.notEqual(runStart, -1, `${FILE}: step ${stepName} has no run block`);
+    const end = workflow.indexOf("\n      - name:", runStart + 1);
+    const nextJob = workflow.slice(runStart).search(/\n {2}[A-Za-z0-9_-]+:\n/u);
+    const stop = [end, nextJob === -1 ? -1 : runStart + nextJob]
+      .filter((i) => i !== -1)
+      .reduce((a, b) => Math.min(a, b), workflow.length);
+    return workflow
+      .slice(runStart + "        run: |\n".length, stop)
+      .split("\n")
+      .map((line) => line.replace(/^ {10}/u, ""))
+      .join("\n");
+  }
+
+  // The workflow-level env block, parsed, so a test that runs a step gets the
+  // values the workflow declares rather than copies of them.
+  function workflowEnv() {
+    const block = source().match(/^env:\n((?: {2}[A-Z_]+: .+\n)+)/mu);
+    assert.ok(block, `${FILE}: workflow env block not found`);
+    return Object.fromEntries(
+      [...block[1].matchAll(/^ {2}([A-Z_]+): (.+)$/gmu)].map((m) => [m[1], m[2].trim()]),
+    );
+  }
+
+  function triggerBlock() {
+    const block = source().match(/^on:\n((?: {2}.*\n|\s*#.*\n|\n)+?)(?=^\S)/mu);
+    assert.ok(block, `${FILE}: on: block not found`);
+    return block[1]
+      .split("\n")
+      .filter((line) => line.trim() !== "" && !line.trim().startsWith("#"))
+      .join("\n");
+  }
+
+  // GitHub's tag filter glob as a regex: `*` is any run without `/`, `[..]` a
+  // class, everything else literal.
+  function globToRegex(glob) {
+    let out = "";
+    for (const ch of glob) {
+      if (ch === "*") {
+        out += "[^/]*";
+      } else if (ch === "[" || ch === "]" || ch === "-") {
+        out += ch;
+      } else {
+        out += ch.replace(/[.*+?^${}()|\\]/gu, "\\$&");
+      }
+    }
+    return new RegExp(`^${out}$`, "u");
+  }
+
+  it("triggers only on a fork release tag push and on manual dispatch", () => {
+    const triggers = triggerBlock();
+    assert.equal(
+      triggers,
+      "  push:\n    tags: ['[0-9]*.[0-9]*.[0-9]*-wyrd.[0-9]*']\n  workflow_dispatch:",
+      `${FILE}: triggers changed; a branch push or schedule would publish without a tag`,
+    );
+    const pattern = globToRegex("[0-9]*.[0-9]*.[0-9]*-wyrd.[0-9]*");
+    for (const tag of ["2.2.10-wyrd.1", "2.3.1-wyrd.12"]) {
+      assert.match(tag, pattern, `${FILE}: the trigger misses fork tag ${tag}`);
+    }
+    for (const tag of ["v2.2.10", "v2.2.10-wyrd.1", "2.2.10", "v3.0.0-rc.1"]) {
+      assert.doesNotMatch(tag, pattern, `${FILE}: the trigger fires on ${tag}`);
+    }
+  });
+
+  it("uses only SHA-pinned actions/* and docker/* actions", () => {
+    const uses = [...source().matchAll(/^\s+(?:- )?uses: (\S+)/gmu)].map((m) => m[1]);
+    assert.ok(uses.length > 0, `${FILE}: no uses: found`);
+    for (const ref of uses) {
+      assert.match(
+        ref,
+        /^(?:actions|docker)\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*@[0-9a-f]{40}$/u,
+        `${FILE}: ${ref} is not a SHA-pinned GitHub-owned action`,
+      );
+    }
+  });
+
+  it("pins each action to the commit upstream's workflows pin it to", () => {
+    // Renovate does not run on the fork. Upstream's Renovate bumps arrive
+    // through the upstream rebase, and this check then fails until the fork's
+    // pins follow, so they cannot silently age.
+    const upstreamPins = new Map();
+    for (const [file, disposition] of Object.entries(DISPOSITIONS)) {
+      if (disposition.kind === "fork") {
+        continue;
+      }
+      for (const m of readWorkflow(file).matchAll(/uses: ([^@\s]+)@([0-9a-f]{40})/gu)) {
+        const pins = upstreamPins.get(m[1]) ?? new Set();
+        pins.add(m[2]);
+        upstreamPins.set(m[1], pins);
+      }
+    }
+    for (const m of source().matchAll(/uses: ([^@\s]+)@([0-9a-f]{40})/gu)) {
+      const pins = upstreamPins.get(m[1]);
+      assert.ok(
+        pins,
+        `${FILE}: ${m[1]} is used by no upstream workflow, so nothing keeps it current`,
+      );
+      assert.ok(
+        pins.has(m[2]),
+        `${FILE}: ${m[1]}@${m[2]} differs from upstream's pin ${[...pins].join(", ")}`,
+      );
+    }
+  });
+
+  it("publishes only to ghcr.io/wyrd-company/sockguard and names upstream only where it must", () => {
+    const text = source();
+    assert.equal(workflowEnv().IMAGE, "ghcr.io/wyrd-company/sockguard");
+    assert.match(text, /^ {10}images: \$\{\{ env\.IMAGE \}\}$/mu);
+    for (const registry of ["docker.io", "quay.io", "index.docker.io", "registry-1.docker.io"]) {
+      assert.ok(!text.includes(registry), `${FILE}: names registry ${registry}`);
+    }
+    const upstreamLines = text.split("\n").filter((line) => /codeswhat/iu.test(line));
+    const why = `${FILE}: only the upstream tag source and the label check may name upstream`;
+    assert.equal(upstreamLines.length, 2, why);
+    assert.equal(
+      upstreamLines[0],
+      "  UPSTREAM_URL: https://github.com/CodesWhat/sockguard.git",
+      why,
+    );
+    assert.match(
+      upstreamLines[1],
+      /--format '\{\{ json \.Config\.Labels \}\}' \| grep -qi codeswhat; then$/u,
+      why,
+    );
+    assert.doesNotMatch(
+      text,
+      /secrets\.(?!GITHUB_TOKEN\b)/u,
+      `${FILE}: reads a secret other than GITHUB_TOKEN`,
+    );
+  });
+
+  it("restores no build cache into the publishing job", () => {
+    assert.doesNotMatch(source(), /cache-(?:from|to)|type=gha/u);
+  });
+
+  it("builds only after the tag is verified, and no job condition can skip that", () => {
+    const jobs = parseJobs(source(), FILE);
+    assert.deepEqual(
+      jobs.map((j) => [j.name, j.needs]),
+      [
+        ["verify", []],
+        ["image", ["verify"]],
+        ["verify-image", ["verify", "image"]],
+      ],
+    );
+    for (const job of jobs) {
+      assert.equal(
+        job.jobIf,
+        null,
+        `${FILE}: job ${job.name} has an if:, which can run it past a failed tag check`,
+      );
+    }
+  });
+
+  it("the tag step refuses a branch run and hands a tag to scripts/fork-release-tag.sh", () => {
+    const script = stepScript(RELEASE_STEP);
+    const dir = mkdtempSync(resolve(tmpdir(), "sockguard-fork-release-step-"));
+    try {
+      mkdirSync(resolve(dir, "scripts"));
+      const log = resolve(dir, "calls");
+      writeFileSync(
+        resolve(dir, "scripts/fork-release-tag.sh"),
+        `printf '%s\\n' "$*" >> "${log}"\n`,
+      );
+      const run = (refType) =>
+        spawnSync("bash", ["-c", script], {
+          cwd: dir,
+          env: { PATH: process.env.PATH, REF_TYPE: refType, RELEASE_TAG: "2.2.10-wyrd.1" },
+          encoding: "utf8",
+        });
+      const branch = run("branch");
+      assert.equal(branch.status, 1);
+      assert.match(branch.stdout, /Run this workflow on a release tag, not a branch/u);
+      assert.throws(() => readFileSync(log, "utf8"), /ENOENT/u, "the tag check ran on a branch");
+      const tag = run("tag");
+      assert.equal(tag.status, 0, tag.stderr);
+      assert.equal(readFileSync(log, "utf8"), "2.2.10-wyrd.1\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Runs the published-image check against stub docker and gh commands that
+  // answer from env and record every invocation.
+  function runImageCheck(overrides = {}) {
+    const dir = mkdtempSync(resolve(tmpdir(), "sockguard-fork-image-check-"));
+    try {
+      const bin = resolve(dir, "bin");
+      mkdirSync(bin);
+      const log = resolve(dir, "calls");
+      writeFileSync(
+        resolve(bin, "docker"),
+        `#!/bin/bash
+printf 'docker %s\\n' "$*" >> "${log}"
+case "$1 $2" in
+  "login ghcr.io") cat >/dev/null ;;
+  "buildx imagetools")
+    if [[ "$4" == *@* ]]; then printf '%s\\n' "$STUB_INDEX"; else printf '{"digest":"%s"}\\n' "$STUB_TAG_DIGEST"; fi ;;
+  "pull --quiet") ;;
+  "run --rm") printf '%s\\n' "$STUB_VERSION_JSON" ;;
+  "image inspect")
+    if [[ "$5" == *source* ]]; then printf '%s\\n' "$STUB_SOURCE"; else printf '%s\\n' "$STUB_LABELS"; fi ;;
+  *) echo "unexpected docker $*" >&2; exit 99 ;;
+esac
+`,
+      );
+      writeFileSync(resolve(bin, "gh"), `#!/bin/bash\nprintf 'gh %s\\n' "$*" >> "${log}"\n`);
+      chmodSync(resolve(bin, "docker"), 0o755);
+      chmodSync(resolve(bin, "gh"), 0o755);
+      const digest = `sha256:${"a".repeat(64)}`;
+      const env = {
+        ...workflowEnv(),
+        PATH: `${bin}:${process.env.PATH}`,
+        GH_TOKEN: "token",
+        GITHUB_ACTOR: "actor",
+        GITHUB_REPOSITORY_OWNER: "wyrd-company",
+        VERSION: "2.2.10-wyrd.1",
+        DIGEST: digest,
+        SOURCE: "https://github.com/wyrd-company/sockguard",
+        STUB_INDEX: JSON.stringify({
+          manifests: [
+            { platform: { os: "linux", architecture: "amd64" } },
+            { platform: { os: "linux", architecture: "arm64" } },
+            { platform: { os: "unknown", architecture: "unknown" } },
+          ],
+        }),
+        STUB_TAG_DIGEST: digest,
+        STUB_VERSION_JSON: '{"version":"2.2.10-wyrd.1"}',
+        STUB_SOURCE: "https://github.com/wyrd-company/sockguard",
+        STUB_LABELS: '{"maintainer":"wyrd-company"}',
+        ...overrides,
+      };
+      const result = spawnSync("bash", ["-c", stepScript(IMAGE_CHECK_STEP)], {
+        env,
+        encoding: "utf8",
+      });
+      let calls = "";
+      try {
+        calls = readFileSync(log, "utf8");
+      } catch {
+        calls = "";
+      }
+      return { ...result, calls, digest };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("the published-image check passes a correct image and verifies its attestation", () => {
+    const result = runImageCheck();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(
+      result.calls,
+      new RegExp(
+        `^gh attestation verify oci://ghcr\\.io/wyrd-company/sockguard@${result.digest} --owner wyrd-company$`,
+        "mu",
+      ),
+    );
+    assert.match(
+      result.calls,
+      /^docker run --rm ghcr\.io\/wyrd-company\/sockguard@sha256:a+ version -o json$/mu,
+    );
+  });
+
+  for (const [name, overrides, reason] of [
+    [
+      "a missing platform",
+      {
+        STUB_INDEX: JSON.stringify({
+          manifests: [{ platform: { os: "linux", architecture: "amd64" } }],
+        }),
+      },
+      /Published platforms 'linux\/amd64'/u,
+    ],
+    [
+      "a tag on another digest",
+      { STUB_TAG_DIGEST: `sha256:${"b".repeat(64)}` },
+      /is sha256:b+, expected/u,
+    ],
+    ["a wrong version", { STUB_VERSION_JSON: '{"version":"dev"}' }, /reports version 'dev'/u],
+    [
+      "an upstream source label",
+      { STUB_SOURCE: "https://github.com/CodesWhat/sockguard" },
+      /Source label 'https:\/\/github\.com\/CodesWhat\/sockguard'/u,
+    ],
+    [
+      "another label naming upstream",
+      { STUB_LABELS: '{"maintainer":"CodesWhat"}' },
+      /An image label names upstream/u,
+    ],
+  ]) {
+    it(`the published-image check refuses ${name} before verifying the attestation`, () => {
+      const result = runImageCheck(overrides);
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.match(result.stdout, reason);
+      assert.doesNotMatch(result.calls, /^gh attestation/mu);
+    });
+  }
+
+  it("Dockerfile: image labels name the fork, not upstream", () => {
+    const labels = readFileSync(resolve(repoRoot, "Dockerfile"), "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("LABEL "));
+    assert.ok(labels.length > 0, "Dockerfile: no LABEL lines found");
+    for (const line of labels) {
+      assert.doesNotMatch(line, /codeswhat/iu, `Dockerfile: ${line}`);
+    }
+    assert.ok(
+      labels.includes(
+        'LABEL org.opencontainers.image.source="https://github.com/wyrd-company/sockguard"',
+      ),
+    );
+    assert.ok(labels.includes('LABEL maintainer="wyrd-company"'));
   });
 });
