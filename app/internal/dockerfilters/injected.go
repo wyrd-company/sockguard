@@ -14,7 +14,8 @@ import (
 // fold `label` values into a map[string]string
 // (daemon/cluster/filters.go: convertKVStringsToMap over Args.Get, whose
 // iteration order is randomized), so a client value repeating the owner key
-// can silently displace the proxy's.
+// can silently displace the proxy's. (The fork keeps client values on the
+// non-Swarm lists that AND them; see ownership/fork_label_filter.go.)
 //
 // Replacing everything, though, also discarded the selectors visibility had
 // just injected, leaving the request owner-scoped but not visibility-scoped —
