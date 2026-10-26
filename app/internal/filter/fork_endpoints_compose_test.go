@@ -98,7 +98,8 @@ func TestForkEndpointsComposeCandidatePolicy(t *testing.T) {
 		{"network driver opts", "POST", "/networks/create", strings.Replace(forkComposeNetwork, `"Driver":""`, `"Driver":"","Options":{"com.docker.network.bridge.name":"br0"}`, 1), 403},
 		{"network custom driver", "POST", "/networks/create", strings.Replace(forkComposeNetwork, `"Driver":""`, `"Driver":"sample/plugin:latest"`, 1), 403},
 		{"volume driver opts", "POST", "/volumes/create", strings.Replace(forkComposeVolume, `"Driver":""`, `"Driver":"local","DriverOpts":{"type":"tmpfs","device":"tmpfs","o":"size=64m"}`, 1), 403},
-		// Denied twice: by the driver-opts gate and by the bind-device check.
+		// Request-shape coverage only: the driver-opts gate denies this first, so
+		// the row does not prove the bind-device check on its own.
 		{"volume bind device", "POST", "/volumes/create", strings.Replace(forkComposeVolume, `"Driver":""`, `"Driver":"local","DriverOpts":{"type":"none","o":"bind","device":"/etc"}`, 1), 403},
 		{"sidecar extra_hosts", "POST", "/containers/create", forkComposeSidecar(`"NetworkMode":""`, `"NetworkMode":"","ExtraHosts":["sample:192.0.2.1"]`), 403},
 		{"sidecar group_add", "POST", "/containers/create", forkComposeSidecar(`"NetworkMode":""`, `"NetworkMode":"","GroupAdd":["sample"]`), 403},
