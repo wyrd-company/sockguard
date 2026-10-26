@@ -1184,7 +1184,8 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	// Client-supplied values under this key are dropped: Swarm's control-plane
 	// lists fold `label` into a map[string]string over a randomly-ordered
 	// Args.Get, so a client value repeating the owner key can displace the
-	// proxy-enforced one.
+	// proxy-enforced one. The fork keeps them on the lists that AND every
+	// value; see fork_label_filter.go.
 	//
 	// Selectors sockguard itself injected earlier in the chain survive that
 	// drop. The visibility middleware runs first and writes the same key, and
