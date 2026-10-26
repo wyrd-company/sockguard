@@ -414,7 +414,7 @@ func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) s
 		if !bindPathAllowed(source, p.allowedBindMounts) {
 			return fmt.Sprintf("libpod container create denied: bind mount source %q is not allowlisted", source)
 		}
-		if denyReason := denySymlinkedBindSourceReason("libpod container create", "bind mount source", source, p.allowedBindMounts); denyReason != "" {
+		if denyReason := denySymlinkedBindSourceReason("libpod container create", "bind mount source", mount.Source, source, p.allowedBindMounts); denyReason != "" {
 			return denyReason
 		}
 	}

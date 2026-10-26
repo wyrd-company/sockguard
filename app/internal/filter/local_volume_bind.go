@@ -365,7 +365,7 @@ func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, a
 				return fmt.Sprintf("%s denied: bind mount source %q is not allowlisted", subject, source)
 			}
 			if symlinks == resolveBindSymlinks {
-				if denyReason := denySymlinkedBindSourceReason(subject, "bind mount source", source, allowedBindMounts); denyReason != "" {
+				if denyReason := denySymlinkedBindSourceReason(subject, "bind mount source", device, source, allowedBindMounts); denyReason != "" {
 					return denyReason
 				}
 			}
@@ -397,7 +397,7 @@ func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, a
 			return fmt.Sprintf("%s denied: local volume %s path %q is not allowlisted", subject, hostPath.option, source)
 		}
 		if symlinks == resolveBindSymlinks {
-			if denyReason := denySymlinkedBindSourceReason(subject, "local volume "+hostPath.option+" path", source, allowedBindMounts); denyReason != "" {
+			if denyReason := denySymlinkedBindSourceReason(subject, "local volume "+hostPath.option+" path", hostPath.path, source, allowedBindMounts); denyReason != "" {
 				return denyReason
 			}
 		}

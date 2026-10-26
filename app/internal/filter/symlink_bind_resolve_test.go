@@ -92,6 +92,11 @@ func TestResolveBindSource(t *testing.T) {
 		{name: "missing tail after a link", source: f.ws + "/in/new", want: f.ws + "/real/new"},
 		{name: "missing tail after a link out", source: f.ws + "/out/new", want: f.outside + "/new"},
 		{name: "missing at the root", source: f.root + "/absent/x", want: f.root + "/absent/x"},
+		{name: "dot-dot after a link out", source: f.ws + "/out/../pwned", want: f.root + "/pwned"},
+		{name: "dot-dot after an intermediate link out", source: f.ws + "/mid/../outside/secret", want: f.outside + "/secret"},
+		{name: "dot-dot after a missing component, then a link out", source: f.ws + "/new/../out", want: f.outside},
+		{name: "dot-dot through real directories", source: f.ws + "/real/../in/file", want: f.ws + "/real/file"},
+		{name: "dot-dot above the root", source: "/../" + strings.TrimPrefix(f.ws, "/") + "/real", want: f.ws + "/real"},
 		{name: "dangling link", source: f.ws + "/dangling", wantErr: errBindSourceDangling},
 		{name: "dangling link with a tail", source: f.ws + "/dangling/x", wantErr: errBindSourceDangling},
 		{name: "dangling link out", source: f.ws + "/danglingout", wantErr: errBindSourceDangling},
@@ -170,7 +175,7 @@ func TestResolveBindSourceMatchesEvalSymlinks(t *testing.T) {
 			return err
 		}
 		corpus = append(corpus, p)
-		for _, tail := range []string{"/secret", "/file", "/.", "/../ws/real"} {
+		for _, tail := range []string{"/secret", "/file", "/.", "/../ws/real", "/../outside/secret", "/../../ws/in"} {
 			corpus = append(corpus, p+tail)
 		}
 		return nil
@@ -179,20 +184,25 @@ func TestResolveBindSourceMatchesEvalSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	compared := 0
+	// The paths are compared as written, not cleaned, so ".." after a link is
+	// resolved by both sides.
+	compared, dotDotAfterLink := 0, 0
 	for _, p := range corpus {
-		clean := filepath.Clean(p)
-		want, wantErr := filepath.EvalSymlinks(clean)
+		want, wantErr := filepath.EvalSymlinks(p)
 		if wantErr != nil {
 			continue
 		}
 		compared++
-		got, err := resolveBindSource(clean)
+		if hasDotDotComponent(p) && want != filepath.Clean(p) {
+			dotDotAfterLink++
+		}
+		got, err := resolveBindSource(p)
 		if err != nil || got != want {
-			t.Errorf("resolveBindSource(%q) = %q, %v; EvalSymlinks = %q", clean, got, err, want)
+			t.Errorf("resolveBindSource(%q) = %q, %v; EvalSymlinks = %q", p, got, err, want)
 		}
 	}
-	if compared < 20 {
-		t.Fatalf("compared only %d paths; the fixture did not build", compared)
+	if compared < 20 || dotDotAfterLink < 5 {
+		t.Fatalf("compared %d paths, %d with \"..\" after a link; the fixture did not build", compared, dotDotAfterLink)
 	}
 }
 
@@ -200,11 +210,17 @@ func TestDenySymlinkedBindSourceReason(t *testing.T) {
 	f := newSymlinkBindFixture(t)
 	tests := []struct {
 		name    string
+		raw     string // as the request spelled it; "" means the same as source
 		source  string
 		allowed []string
 		want    string
 	}{
 		{name: "ordinary path", source: f.ws + "/real", allowed: []string{f.ws}},
+		{name: "raw dot-dot after a link out", raw: f.ws + "/out/../pwned", source: f.ws + "/pwned", allowed: []string{f.ws},
+			want: `t denied: bind mount source "` + f.ws + `/out/../pwned" resolves to "` + f.root + `/pwned", which is not allowlisted`},
+		{name: "raw dot-dot through real directories", raw: f.ws + "/real/../real", source: f.ws + "/real", allowed: []string{f.ws}},
+		{name: "raw dot-dot into a dangling link", raw: f.ws + "/real/../dangling", source: f.ws + "/dangling", allowed: []string{f.ws},
+			want: `t denied: bind mount source "` + f.ws + `/dangling" cannot be resolved: dangling symlink at "` + f.ws + `/nope"`},
 		{name: "missing path", source: f.ws + "/new", allowed: []string{f.ws}},
 		{name: "link inside", source: f.ws + "/in", allowed: []string{f.ws}},
 		{name: "link out", source: f.ws + "/out", allowed: []string{f.ws},
@@ -221,7 +237,11 @@ func TestDenySymlinkedBindSourceReason(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := denySymlinkedBindSourceReason("t", "bind mount source", tt.source, tt.allowed); got != tt.want {
+			raw := tt.raw
+			if raw == "" {
+				raw = tt.source
+			}
+			if got := denySymlinkedBindSourceReason("t", "bind mount source", raw, tt.source, tt.allowed); got != tt.want {
 				t.Fatalf("denySymlinkedBindSourceReason() = %q, want %q", got, tt.want)
 			}
 		})
@@ -245,6 +265,9 @@ func TestSymlinkBindSourcesPerSurface(t *testing.T) {
 	f := newSymlinkBindFixture(t)
 	allowed := []string{f.ws}
 	out, in := f.ws+"/out", f.ws+"/in"
+	// dotDotOut cleans to <ws>/pwned, which passes the lexical check, while the
+	// kernel and os.MkdirAll follow "out" first and reach <root>/pwned.
+	dotDotOut, dotDotReal := f.ws+"/out/../pwned", f.ws+"/real/../real"
 
 	docker := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: allowed})
 	libpod := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: allowed})
@@ -314,6 +337,20 @@ func TestSymlinkBindSourcesPerSurface(t *testing.T) {
 			want: `volume create denied: local volume lowerdir path "%s" resolves to`,
 		},
 		{
+			name: "volume create overlay upperdir", inspect: volumeInspect, urlPath: "/volumes/create",
+			body: func(s string) string {
+				return `{"Name":"v","Driver":"local","DriverOpts":{"type":"overlay","device":"` + f.ws + `/real","o":"lowerdir=` + f.ws + `/real,upperdir=` + s + `,workdir=` + f.ws + `/real"}}`
+			},
+			want: `volume create denied: local volume upperdir path "%s" resolves to`,
+		},
+		{
+			name: "volume create overlay workdir", inspect: volumeInspect, urlPath: "/volumes/create",
+			body: func(s string) string {
+				return `{"Name":"v","Driver":"local","DriverOpts":{"type":"overlay","device":"` + f.ws + `/real","o":"lowerdir=` + f.ws + `/real,upperdir=` + f.ws + `/real,workdir=` + s + `"}}`
+			},
+			want: `volume create denied: local volume workdir path "%s" resolves to`,
+		},
+		{
 			name: "libpod volume create bind device", inspect: libpodVolumeInspect, urlPath: "/libpod/volumes/create",
 			body: func(s string) string {
 				return `{"Name":"v","Driver":"local","Options":{"type":"none","o":"bind","device":"` + s + `"}}`
@@ -368,6 +405,17 @@ func TestSymlinkBindSourcesPerSurface(t *testing.T) {
 		})
 		t.Run(s.name+"/link inside", func(t *testing.T) {
 			if got := symlinkBindInspect(t, s.inspect, s.urlPath, s.body(in)); got != "" {
+				t.Fatalf("deny reason = %q, want allowed", got)
+			}
+		})
+		t.Run(s.name+"/dot-dot after link out", func(t *testing.T) {
+			want := strings.Replace(s.want, "%s", dotDotOut, 1) + ` "` + f.root + `/pwned"`
+			if got := symlinkBindInspect(t, s.inspect, s.urlPath, s.body(dotDotOut)); !strings.HasPrefix(got, want) {
+				t.Fatalf("deny reason = %q, want prefix %q", got, want)
+			}
+		})
+		t.Run(s.name+"/dot-dot through real directories", func(t *testing.T) {
+			if got := symlinkBindInspect(t, s.inspect, s.urlPath, s.body(dotDotReal)); got != "" {
 				t.Fatalf("deny reason = %q, want allowed", got)
 			}
 		})

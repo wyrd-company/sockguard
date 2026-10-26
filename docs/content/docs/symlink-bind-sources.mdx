@@ -35,12 +35,20 @@ These keep the string check only:
 
 - Every component is resolved, including intermediate directories and
   relative targets that contain `..`.
+- A `..` is applied the way the kernel applies it: to the real parent of what
+  the walk has reached, after the symlink before it is followed. A source that
+  is spelled with `..` is checked both as written and in its cleaned form.
+  dockerd and libpod mount the cleaned form. A `local` volume device or overlay
+  directory reaches the kernel as written, and Podman's compat create runs
+  `os.MkdirAll` on a `HostConfig.Binds` source as written. So `/srv/workspaces/link/../x`, with
+  `link` pointing at `/mnt/other`, is checked as `/mnt/x` too and is denied.
 - Allowlist entries are resolved too, so an entry that is itself a symlink
   (`/srv/workspaces` -> `/mnt/data/workspaces`) still covers the sources under
   it.
 - A source that contains no symlink resolves to itself, so an ordinary path
   that passes the string check passes as before.
-- A part of the source that does not exist yet is kept as written. dockerd
+- A part of the source that does not exist yet is taken as a directory that
+  will be created, and the rest of the source is resolved from there. dockerd
   creates a missing `HostConfig.Binds` source as a directory at start, so such
   a request still works.
 - An allowlist that contains `/` allows every source, so nothing is resolved.

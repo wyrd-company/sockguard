@@ -65,18 +65,23 @@ func splitBindPathComponents(p string, fromLink bool) []bindPathComponent {
 	return out
 }
 
-// resolveBindSource returns source with every symlink resolved, including
-// symlinks in intermediate components and relative targets with "..". source
-// must be absolute.
+// resolveBindSource walks source component by component the way the kernel
+// looks up a path, and returns it with every symlink resolved: intermediate
+// components, relative targets, and ".." applied to the real parent of what the
+// walk has reached, after the link before it is followed. source is used as
+// written, without lexical cleaning, so "/a/link/../b" with "link" -> "/x"
+// resolves to "/b", where cleaning first gives "/a/b".
 //
-// A component of source itself that does not exist ends the walk: the rest of
-// source is appended to the resolved prefix unchanged. dockerd creates a
-// missing HostConfig.Binds source as a directory at start, so a missing path
-// is a valid request, and the part that does not exist yet holds no symlink.
-// A missing component that came from a symlink target is a dangling symlink
-// and fails with errBindSourceDangling.
+// A component of source itself that does not exist is taken as a directory
+// that will be created, and the walk goes on. dockerd creates a missing
+// HostConfig.Binds source at start, and Podman's compat create runs
+// os.MkdirAll on a HostConfig.Binds source as written (5.8.6
+// pkg/api/handlers/compat/containers_create.go), which creates the missing
+// component and then follows the rest, ".." and links included. A missing component that
+// came from a symlink target is a dangling symlink and fails with
+// errBindSourceDangling.
 func resolveBindSource(source string) (string, error) {
-	pending := splitBindPathComponents(path.Clean(source), false)
+	pending := splitBindPathComponents(source, false)
 	resolved := "/"
 	hops := 0
 	for len(pending) > 0 {
@@ -92,15 +97,8 @@ func resolveBindSource(source string) (string, error) {
 		info, err := os.Lstat(next)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) && !component.fromLink {
-				// Every pending component is from source itself: symlink
-				// targets are spliced in front of the queue, and the walk
-				// never reads past a missing component.
-				rest := make([]string, 0, len(pending)+2)
-				rest = append(rest, next)
-				for _, c := range pending {
-					rest = append(rest, c.name)
-				}
-				return path.Join(rest...), nil
+				resolved = next
+				continue
 			}
 			return "", classifyBindLookupError(next, err)
 		}
@@ -152,22 +150,55 @@ func resolveBindAllowlist(allowed []string) []string {
 }
 
 // denySymlinkedBindSourceReason checks the resolved form of a bind source that
-// has already passed the lexical bindPathAllowed check. It returns "" when the
-// source holds no symlink, when it resolves under an allowlist entry, and when
-// the allowlist holds "/". Otherwise it returns a deny reason worded like the
-// caller's own: subject names the endpoint and label the field.
-func denySymlinkedBindSourceReason(subject, label, source string, allowed []string) string {
+// has already passed the lexical bindPathAllowed check. raw is the value as the
+// request spelled it and source is its lexically cleaned form, the one the
+// lexical check compared.
+//
+// The cleaned form is what dockerd and Podman's libpod create mount, so it is
+// resolved first. When raw has a ".." component, raw is resolved too: the
+// kernel applies ".." after the link before it, and a local volume device or
+// overlay directory reaches mount(2) as written, as a Podman compat
+// HostConfig.Binds source reaches os.MkdirAll. Both forms must resolve under an allowlist entry.
+//
+// It returns "" when neither form holds a symlink, when both resolve under an
+// allowlist entry, and when the allowlist holds "/". Otherwise it returns a
+// deny reason worded like the caller's own: subject names the endpoint and
+// label the field.
+func denySymlinkedBindSourceReason(subject, label, raw, source string, allowed []string) string {
 	if slices.Contains(allowed, "/") {
 		return ""
 	}
-	resolved, err := resolveBindSource(source)
-	if err != nil {
-		return fmt.Sprintf("%s denied: %s %q cannot be resolved: %v", subject, label, source, err)
+	spellings := []string{source}
+	if hasDotDotComponent(raw) {
+		spellings = append(spellings, raw)
 	}
-	if resolved == source || bindPathAllowed(resolved, resolveBindAllowlist(allowed)) {
-		return ""
+	var resolvedAllowed []string
+	for _, spelling := range spellings {
+		resolved, err := resolveBindSource(spelling)
+		if err != nil {
+			return fmt.Sprintf("%s denied: %s %q cannot be resolved: %v", subject, label, spelling, err)
+		}
+		if resolved == source {
+			continue
+		}
+		if resolvedAllowed == nil {
+			resolvedAllowed = resolveBindAllowlist(allowed)
+		}
+		if !bindPathAllowed(resolved, resolvedAllowed) {
+			return fmt.Sprintf("%s denied: %s %q resolves to %q, which is not allowlisted", subject, label, spelling, resolved)
+		}
 	}
-	return fmt.Sprintf("%s denied: %s %q resolves to %q, which is not allowlisted", subject, label, source, resolved)
+	return ""
+}
+
+// hasDotDotComponent reports whether p has a ".." path component.
+func hasDotDotComponent(p string) bool {
+	for name := range strings.SplitSeq(p, "/") {
+		if name == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // bindSymlinkMode tells a helper shared with the service inspector whether to
