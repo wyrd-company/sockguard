@@ -22,9 +22,15 @@ const ACTIVE_SECRET_ALLOWLIST = new Set(["GITHUB_TOKEN", "DOCKERHUB_USERNAME", "
 // disabled: every job must be skipped on the fork (directly guarded, or
 //           needing a guarded job with no status function that overrides the skip).
 // partial:  named jobs carry the guard; the rest run on the fork.
-// active:   runs unchanged on the fork.
+// active:   carries no fork guard in the file.
+// fork:     owned by the fork, not upstream (see "fork-ci workflow" below).
+//
+// Upstream's workflows are also disabled in the repository's Actions settings,
+// so fork-ci.yml is the only CI that runs. The dispositions above still hold
+// for the day an upstream workflow is enabled again.
 const DISPOSITIONS = {
   "ci-verify.yml": { kind: "active" },
+  "fork-ci.yml": { kind: "fork" },
   "greptile.yml": { kind: "disabled", guard: UPSTREAM },
   "main-is-released.yml": { kind: "disabled", guard: UPSTREAM },
   "quality-api-version-watch.yml": { kind: "active" },
@@ -260,6 +266,90 @@ describe("fork workflow dispositions", () => {
     assert.ok(
       !source.includes("CodesWhat/sockguard'"),
       "ci-verify.yml must not skip any job on the fork",
+    );
+  });
+});
+
+// fork-ci.yml is the fork's only active CI. It must stay on GitHub-owned
+// actions pinned by SHA, read-only, secret-free and publish-free, and keep
+// running the fork's test, lint and build gates.
+describe("fork-ci workflow", () => {
+  const FILE = "fork-ci.yml";
+  const BRANCHES = "[main, 'epic/*']";
+
+  function topLevelBlock(source, key) {
+    const match = source.match(new RegExp(`^${key}:\\n((?:(?: .*)?\\n)*)`, "mu"));
+    assert.ok(match, `${FILE}: top-level ${key}: block not found`);
+    return match[1].trimEnd();
+  }
+
+  it("triggers only on push and pull_request for main and epic/*", () => {
+    const on = topLevelBlock(readWorkflow(FILE), "on");
+    assert.equal(
+      on,
+      `  push:\n    branches: ${BRANCHES}\n  pull_request:\n    branches: ${BRANCHES}`,
+      `${FILE}: triggers must be exactly push and pull_request on ${BRANCHES}`,
+    );
+  });
+
+  it("uses only GitHub-owned actions pinned by full commit SHA", () => {
+    const uses = [...readWorkflow(FILE).matchAll(/^\s+(?:- )?uses: (.+)$/gmu)].map((m) => m[1]);
+    assert.ok(uses.length > 0, `${FILE}: no uses: lines found`);
+    for (const ref of uses) {
+      assert.match(
+        ref,
+        /^(?:actions|docker)\/[A-Za-z0-9_.-]+@[0-9a-f]{40} {2}# v\d+\.\d+\.\d+$/u,
+        `${FILE}: ${ref} is not a SHA-pinned actions/* or docker/* action`,
+      );
+    }
+  });
+
+  it("grants read-only contents permission and no job widens it", () => {
+    const source = readWorkflow(FILE);
+    assert.equal(topLevelBlock(source, "permissions"), "  contents: read");
+    for (const job of parseJobs(source, FILE)) {
+      assert.doesNotMatch(
+        job.body,
+        /^ {4}permissions:/mu,
+        `${FILE}: job ${job.name} sets permissions`,
+      );
+    }
+  });
+
+  it("reads no secrets, logs in nowhere and pushes nothing", () => {
+    const source = readWorkflow(FILE);
+    assert.deepEqual([...secretsIn(source)], [], `${FILE}: reads a secret`);
+    assert.doesNotMatch(
+      source,
+      /docker\/login-action|docker (?:login|push)|--push\b|^\s+push: true/mu,
+    );
+  });
+
+  it("runs every job on the fork", () => {
+    for (const job of parseJobs(readWorkflow(FILE), FILE)) {
+      assert.equal(job.jobIf, null, `${FILE}: job ${job.name} has an if: and may be skipped`);
+    }
+  });
+
+  it("runs the fork's test, lint and build gates", () => {
+    const jobs = new Map(parseJobs(readWorkflow(FILE), FILE).map((j) => [j.name, j.body]));
+    const gates = {
+      "go-test":
+        'run: |\n          DOCKER_CONFIG="$(mktemp -d)"\n          export DOCKER_CONFIG\n          ./scripts/ci/go-test.sh',
+      "go-lint": "run: ./scripts/ci/go-lint.sh",
+      "go-build": 'run: go build -o "$RUNNER_TEMP/sockguard" ./app/cmd/sockguard/',
+      "docker-build": "run: docker build --tag sockguard:fork-ci .",
+      node: "run: npx biome check .",
+    };
+    for (const [name, command] of Object.entries(gates)) {
+      assert.ok(
+        jobs.get(name)?.includes(command),
+        `${FILE}: job ${name} no longer runs ${command}`,
+      );
+    }
+    assert.ok(
+      jobs.get("node").includes("run: npm test"),
+      `${FILE}: job node no longer runs npm test`,
     );
   });
 });
