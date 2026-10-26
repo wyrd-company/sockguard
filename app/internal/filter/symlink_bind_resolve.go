@@ -81,8 +81,17 @@ func splitBindPathComponents(p string, fromLink bool) []bindPathComponent {
 // came from a symlink target is a dangling symlink and fails with
 // errBindSourceDangling.
 func resolveBindSource(source string) (string, error) {
+	resolved, _, err := walkBindSource(source)
+	return resolved, err
+}
+
+// walkBindSource is resolveBindSource that also returns, in walk order, the
+// resolved location of every missing component of source: the directories
+// os.MkdirAll creates for it. A ".." can take the walk back out of such a
+// directory, so a location here need not be a parent of the final path.
+func walkBindSource(source string) (resolved string, created []string, err error) {
 	pending := splitBindPathComponents(source, false)
-	resolved := "/"
+	resolved = "/"
 	hops := 0
 	for len(pending) > 0 {
 		component := pending[0]
@@ -97,10 +106,11 @@ func resolveBindSource(source string) (string, error) {
 		info, err := os.Lstat(next)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) && !component.fromLink {
+				created = append(created, next)
 				resolved = next
 				continue
 			}
-			return "", classifyBindLookupError(next, err)
+			return "", nil, classifyBindLookupError(next, err)
 		}
 		if info.Mode()&fs.ModeSymlink == 0 {
 			resolved = next
@@ -108,18 +118,18 @@ func resolveBindSource(source string) (string, error) {
 		}
 		hops++
 		if hops > maxBindSymlinkHops {
-			return "", fmt.Errorf("%w at %q", errBindSourceLoop, next)
+			return "", nil, fmt.Errorf("%w at %q", errBindSourceLoop, next)
 		}
 		target, err := os.Readlink(next)
 		if err != nil {
-			return "", classifyBindLookupError(next, err)
+			return "", nil, classifyBindLookupError(next, err)
 		}
 		if path.IsAbs(target) {
 			resolved = "/"
 		}
 		pending = append(splitBindPathComponents(target, true), pending...)
 	}
-	return resolved, nil
+	return resolved, created, nil
 }
 
 func classifyBindLookupError(at string, err error) error {
@@ -158,12 +168,19 @@ func resolveBindAllowlist(allowed []string) []string {
 // resolved first. When raw has a ".." component, raw is resolved too: the
 // kernel applies ".." after the link before it, and a local volume device or
 // overlay directory reaches mount(2) as written, as a Podman compat
-// HostConfig.Binds source reaches os.MkdirAll. Both forms must resolve under an allowlist entry.
+// HostConfig.Binds source reaches os.MkdirAll. Both forms must resolve under
+// an allowlist entry.
 //
-// It returns "" when neither form holds a symlink, when both resolve under an
-// allowlist entry, and when the allowlist holds "/". Otherwise it returns a
-// deny reason worded like the caller's own: subject names the endpoint and
-// label the field.
+// Every directory a form creates must be allowed as well, because os.MkdirAll
+// creates it before the walk returns: a ".." can lead back under the allowlist
+// from a directory created outside it. A created directory is allowed when it
+// is under an allowlist entry or is a parent of one, since creating a missing
+// entry creates its parents too.
+//
+// It returns "" when neither form holds a symlink or creates a directory, when
+// every location passes, and when the allowlist holds "/". Otherwise it
+// returns a deny reason worded like the caller's own: subject names the
+// endpoint and label the field.
 func denySymlinkedBindSourceReason(subject, label, raw, source string, allowed []string) string {
 	if slices.Contains(allowed, "/") {
 		return ""
@@ -173,22 +190,41 @@ func denySymlinkedBindSourceReason(subject, label, raw, source string, allowed [
 		spellings = append(spellings, raw)
 	}
 	var resolvedAllowed []string
-	for _, spelling := range spellings {
-		resolved, err := resolveBindSource(spelling)
-		if err != nil {
-			return fmt.Sprintf("%s denied: %s %q cannot be resolved: %v", subject, label, spelling, err)
-		}
-		if resolved == source {
-			continue
-		}
+	allowlist := func() []string {
 		if resolvedAllowed == nil {
 			resolvedAllowed = resolveBindAllowlist(allowed)
 		}
-		if !bindPathAllowed(resolved, resolvedAllowed) {
+		return resolvedAllowed
+	}
+	for _, spelling := range spellings {
+		resolved, created, err := walkBindSource(spelling)
+		if err != nil {
+			return fmt.Sprintf("%s denied: %s %q cannot be resolved: %v", subject, label, spelling, err)
+		}
+		if resolved != source && !bindPathAllowed(resolved, allowlist()) {
 			return fmt.Sprintf("%s denied: %s %q resolves to %q, which is not allowlisted", subject, label, spelling, resolved)
+		}
+		for _, dir := range created {
+			if !createdBindDirAllowed(dir, allowlist()) {
+				return fmt.Sprintf("%s denied: %s %q creates directory %q, which is not allowlisted", subject, label, spelling, dir)
+			}
 		}
 	}
 	return ""
+}
+
+// createdBindDirAllowed reports whether os.MkdirAll may create dir: dir is
+// under an allowlist entry, or is a parent of one.
+func createdBindDirAllowed(dir string, allowed []string) bool {
+	if bindPathAllowed(dir, allowed) {
+		return true
+	}
+	for _, entry := range allowed {
+		if strings.HasPrefix(entry, dir+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasDotDotComponent reports whether p has a ".." path component.
