@@ -50,10 +50,12 @@
 > [!IMPORTANT]
 > **This repository is the wyrd-company fork of [CodesWhat/sockguard](https://github.com/CodesWhat/sockguard).** It tracks upstream v2.2.10 and is rebased onto upstream security releases. Everything below this section describes the upstream project; the fork's own changes are listed in this section and in the pull requests that land them.
 
-- **CI.** `ci-verify.yml` runs on pull requests and pushes to `main` and `epic/*` branches, and the integration, fuzz, soak, benchmark, mutation, Grype and Docker API watch workflows run unchanged.
+- **CI.** `.github/workflows/fork-ci.yml` is the only active CI. It runs on pull requests and pushes to `main` and `epic/*` branches: Go tests, golangci-lint, the Go build, the Docker image build (no push), Biome and the workspace and script tests. It uses only GitHub-owned actions pinned by commit SHA, has read-only permissions, reads no secrets and publishes nothing.
+- **Upstream workflows are disabled** in the repository's Actions settings. Their files stay unchanged so upstream releases rebase cleanly. The dispositions below apply if one is enabled again.
 - **Skipped on the fork.** Jobs that publish under upstream's name, need secrets this repository does not hold, or point at upstream-owned services are guarded with `github.repository == 'CodesWhat/sockguard'`: the release cut, the release from tag, the star chart refresh, the Greptile second opinion, the `main`-is-released monitor, the ZAP scan of upstream's website, the mutation-score badge commit, the scan of the latest published release image, and the tri-tool conformance run, whose harness pulls only upstream's images.
-- **OpenSSF Scorecard** runs on `main` and uploads to this repository's code scanning; it does not publish to the OpenSSF API.
+- **OpenSSF Scorecard**, when enabled, runs on `main` and uploads to this repository's code scanning; it does not publish to the OpenSSF API.
 - **Where the dispositions are pinned.** `scripts/fork-workflow-guards.test.mjs` classifies every workflow file and fails when a workflow is added without a disposition, a guard is dropped, or an active job reads a secret the fork does not have.
+- **Where fork CI is pinned.** The `fork-ci workflow` block of the same test fails when `fork-ci.yml` gains a trigger, an action that is not a SHA-pinned `actions/*` or `docker/*` action, a permission, a secret or a push, or stops running one of its gates.
 - **Badges, install commands and contact addresses** in this README, `SECURITY.md` and the issue template name upstream's releases, registries, website and maintainers. They do not describe this fork's images or reviewers.
 - **Review.** `.github/CODEOWNERS` names the fork's final reviewer. `.github/FUNDING.yml` is empty; to support the project, sponsor [CodesWhat](https://github.com/sponsors/CodesWhat).
 
