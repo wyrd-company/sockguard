@@ -505,6 +505,18 @@ describe("fork release workflow", () => {
     );
   });
 
+  it("tags the image with the verified fork version and latest, nothing else", () => {
+    const tags = source().match(/^ {10}tags: \|\n((?: {12}.+\n)+)/mu);
+    assert.ok(tags, `${FILE}: docker metadata tags block not found`);
+    const lines = tags[1]
+      .trim()
+      .split("\n")
+      .map((line) => line.trim());
+    assert.equal(lines.length, 2, `${FILE}: image tags changed: ${lines.join(" | ")}`);
+    assert.match(lines[0], /^type=raw,value=\$\{\{ needs\.verify\.outputs\.version \}\}$/u);
+    assert.equal(lines[1], "type=raw,value=latest");
+  });
+
   it("restores no build cache into the publishing job", () => {
     assert.doesNotMatch(source(), /cache-(?:from|to)|type=gha/u);
   });
