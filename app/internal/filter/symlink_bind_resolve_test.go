@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -92,7 +93,7 @@ func TestResolveBindSource(t *testing.T) {
 		{name: "missing tail after a link", source: f.ws + "/in/new", want: f.ws + "/real/new"},
 		{name: "missing tail after a link out", source: f.ws + "/out/new", want: f.outside + "/new"},
 		{name: "missing at the root", source: f.root + "/absent/x", want: f.root + "/absent/x"},
-		{name: "dot-dot after a link out", source: f.ws + "/out/../pwned", want: f.root + "/pwned"},
+		{name: "dot-dot after a link out", source: f.ws + "/out/../beside", want: f.root + "/beside"},
 		{name: "dot-dot after an intermediate link out", source: f.ws + "/mid/../outside/secret", want: f.outside + "/secret"},
 		{name: "dot-dot after a missing component, then a link out", source: f.ws + "/new/../out", want: f.outside},
 		{name: "dot-dot through real directories", source: f.ws + "/real/../in/file", want: f.ws + "/real/file"},
@@ -206,6 +207,77 @@ func TestResolveBindSourceMatchesEvalSymlinks(t *testing.T) {
 	}
 }
 
+// TestWalkBindSourceCreatedMatchesMkdirAll compares the directories the walk
+// reports as created with the directories os.MkdirAll really creates for the
+// same spelling, each on a fresh fixture. Podman's compat create runs
+// os.MkdirAll on a HostConfig.Binds source as written.
+func TestWalkBindSourceCreatedMatchesMkdirAll(t *testing.T) {
+	cases := []struct {
+		name string
+		rel  string // spelling under the fixture root
+		want []string
+	}{
+		{name: "dot-dot back inside from a directory created outside", rel: "ws/out/new/../../ws/real", want: []string{"outside/new"}},
+		{name: "dot-dot through a directory created outside, no symlink", rel: "ws/../outside/new/../../ws/real", want: []string{"outside/new"}},
+		{name: "two directories created outside, then a third", rel: "ws/out/a/b/../../c", want: []string{"outside/a", "outside/a/b", "outside/c"}},
+		{name: "dot-dot back from a directory created inside", rel: "ws/real/new/../../real", want: []string{"ws/real/new"}},
+		{name: "missing tail", rel: "ws/real/new/deeper", want: []string{"ws/real/new", "ws/real/new/deeper"}},
+		{name: "missing tail after a link inside", rel: "ws/in/new", want: []string{"ws/real/new"}},
+		{name: "existing path", rel: "ws/real", want: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSymlinkBindFixture(t)
+			spelling := f.root + "/" + tc.rel
+			_, created, err := walkBindSource(spelling)
+			if err != nil {
+				t.Fatalf("walkBindSource(%q) error = %v", spelling, err)
+			}
+			var want []string
+			for _, rel := range tc.want {
+				want = append(want, filepath.Join(f.root, rel))
+			}
+			if !slices.Equal(created, want) {
+				t.Fatalf("walkBindSource(%q) created = %q, want %q", spelling, created, want)
+			}
+
+			before := symlinkBindTree(t, f.root)
+			if err := os.MkdirAll(spelling, 0o755); err != nil {
+				t.Fatalf("os.MkdirAll(%q) error = %v", spelling, err)
+			}
+			var made []string
+			for _, p := range symlinkBindTree(t, f.root) {
+				if !slices.Contains(before, p) {
+					made = append(made, p)
+				}
+			}
+			slices.Sort(made)
+			sorted := slices.Clone(created)
+			slices.Sort(sorted)
+			if !slices.Equal(made, sorted) {
+				t.Fatalf("os.MkdirAll(%q) created %q, walk reports %q", spelling, made, sorted)
+			}
+		})
+	}
+}
+
+// symlinkBindTree lists every path under root without following symlinks.
+func symlinkBindTree(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(root, func(p string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		out = append(out, p)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func TestDenySymlinkedBindSourceReason(t *testing.T) {
 	f := newSymlinkBindFixture(t)
 	tests := []struct {
@@ -216,9 +288,17 @@ func TestDenySymlinkedBindSourceReason(t *testing.T) {
 		want    string
 	}{
 		{name: "ordinary path", source: f.ws + "/real", allowed: []string{f.ws}},
-		{name: "raw dot-dot after a link out", raw: f.ws + "/out/../pwned", source: f.ws + "/pwned", allowed: []string{f.ws},
-			want: `t denied: bind mount source "` + f.ws + `/out/../pwned" resolves to "` + f.root + `/pwned", which is not allowlisted`},
+		{name: "raw dot-dot after a link out", raw: f.ws + "/out/../beside", source: f.ws + "/beside", allowed: []string{f.ws},
+			want: `t denied: bind mount source "` + f.ws + `/out/../beside" resolves to "` + f.root + `/beside", which is not allowlisted`},
 		{name: "raw dot-dot through real directories", raw: f.ws + "/real/../real", source: f.ws + "/real", allowed: []string{f.ws}},
+		{name: "raw dot-dot back inside from a directory created outside", raw: f.ws + "/out/new/../../ws/real", source: f.ws + "/ws/real", allowed: []string{f.ws},
+			want: `t denied: bind mount source "` + f.ws + `/out/new/../../ws/real" creates directory "` + f.outside + `/new", which is not allowlisted`},
+		{name: "raw dot-dot through a directory created outside, no symlink", raw: f.ws + "/../outside/new/../../ws/real", source: f.ws + "/real", allowed: []string{f.ws},
+			want: `t denied: bind mount source "` + f.ws + `/../outside/new/../../ws/real" creates directory "` + f.outside + `/new", which is not allowlisted`},
+		{name: "raw dot-dot back from a directory created inside", raw: f.ws + "/real/new/../../real", source: f.ws + "/real", allowed: []string{f.ws}},
+		{name: "created parent of an allowlist entry", raw: f.root + "/absent/../absent/entry/y", source: f.root + "/absent/entry/y", allowed: []string{f.root + "/absent/entry"}},
+		{name: "created directory beside an allowlist entry", raw: f.root + "/absent/x/../entry/y", source: f.root + "/absent/entry/y", allowed: []string{f.root + "/absent/entry"},
+			want: `t denied: bind mount source "` + f.root + `/absent/x/../entry/y" creates directory "` + f.root + `/absent/x", which is not allowlisted`},
 		{name: "raw dot-dot into a dangling link", raw: f.ws + "/real/../dangling", source: f.ws + "/dangling", allowed: []string{f.ws},
 			want: `t denied: bind mount source "` + f.ws + `/dangling" cannot be resolved: dangling symlink at "` + f.ws + `/nope"`},
 		{name: "missing path", source: f.ws + "/new", allowed: []string{f.ws}},
@@ -265,9 +345,15 @@ func TestSymlinkBindSourcesPerSurface(t *testing.T) {
 	f := newSymlinkBindFixture(t)
 	allowed := []string{f.ws}
 	out, in := f.ws+"/out", f.ws+"/in"
-	// dotDotOut cleans to <ws>/pwned, which passes the lexical check, while the
-	// kernel and os.MkdirAll follow "out" first and reach <root>/pwned.
-	dotDotOut, dotDotReal := f.ws+"/out/../pwned", f.ws+"/real/../real"
+	// dotDotOut cleans to <ws>/beside, which passes the lexical check, while the
+	// kernel and os.MkdirAll follow "out" first and reach <root>/beside.
+	dotDotOut, dotDotReal := f.ws+"/out/../beside", f.ws+"/real/../real"
+	// createdOutside and createdOutsideNoLink clean to a path under <ws>, and
+	// the walk as written also ends under <ws>, but os.MkdirAll creates
+	// <outside>/new on the way. createdInside creates <ws>/real/new instead.
+	createdOutside := f.ws + "/out/new/../../ws/real"
+	createdOutsideNoLink := f.ws + "/../outside/new/../../ws/real"
+	createdInside := f.ws + "/real/new/../../real"
 
 	docker := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: allowed})
 	libpod := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: allowed})
@@ -409,13 +495,30 @@ func TestSymlinkBindSourcesPerSurface(t *testing.T) {
 			}
 		})
 		t.Run(s.name+"/dot-dot after link out", func(t *testing.T) {
-			want := strings.Replace(s.want, "%s", dotDotOut, 1) + ` "` + f.root + `/pwned"`
+			want := strings.Replace(s.want, "%s", dotDotOut, 1) + ` "` + f.root + `/beside"`
 			if got := symlinkBindInspect(t, s.inspect, s.urlPath, s.body(dotDotOut)); !strings.HasPrefix(got, want) {
 				t.Fatalf("deny reason = %q, want prefix %q", got, want)
 			}
 		})
 		t.Run(s.name+"/dot-dot through real directories", func(t *testing.T) {
 			if got := symlinkBindInspect(t, s.inspect, s.urlPath, s.body(dotDotReal)); got != "" {
+				t.Fatalf("deny reason = %q, want allowed", got)
+			}
+		})
+		for _, row := range []struct{ name, spelling string }{
+			{"dot-dot back inside from a directory created outside", createdOutside},
+			{"dot-dot through a directory created outside, no symlink", createdOutsideNoLink},
+		} {
+			t.Run(s.name+"/"+row.name, func(t *testing.T) {
+				want := strings.Replace(strings.TrimSuffix(s.want, " resolves to"), "%s", row.spelling, 1) +
+					` creates directory "` + f.outside + `/new", which is not allowlisted`
+				if got := symlinkBindInspect(t, s.inspect, s.urlPath, s.body(row.spelling)); got != want {
+					t.Fatalf("deny reason = %q, want %q", got, want)
+				}
+			})
+		}
+		t.Run(s.name+"/dot-dot back from a directory created inside", func(t *testing.T) {
+			if got := symlinkBindInspect(t, s.inspect, s.urlPath, s.body(createdInside)); got != "" {
 				t.Fatalf("deny reason = %q, want allowed", got)
 			}
 		})
