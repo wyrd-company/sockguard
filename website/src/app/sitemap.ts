@@ -38,6 +38,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ...[
       "getting-started",
       "configuration",
+      "buildkit-llb-bridge",
       "multi-host",
       "presets",
       "podman",

@@ -9,6 +9,7 @@ const routes = [
   "/compare/wollomatic",
   "/docs",
   "/docs/admin",
+  "/docs/buildkit-llb-bridge",
   "/docs/cis-docker-benchmark",
   "/docs/configuration",
   "/docs/getting-started",
