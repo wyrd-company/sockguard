@@ -11,10 +11,13 @@ const repoRoot = resolve(scriptDir, "..");
 const scriptPath = resolve(scriptDir, "verify-published-release.sh");
 
 function runVerify(args, env = {}) {
+  // Fork: the script reads GITHUB_REPOSITORY, which a fork's runner sets to the
+  // fork. These tests pin upstream's release, so a test sets it or it is unset.
+  const { GITHUB_REPOSITORY: _runnerRepository, ...inherited } = process.env;
   return spawnSync("bash", [scriptPath, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...inherited, ...env },
   });
 }
 
