@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Fork: client-profile denials use `response.deny_verbosity`.** Only the default policy took the global setting, so a denial under a client profile always returned the minimal body. Every profile's denials now return the same body as the default policy's.
+- **Fork only: owner isolation no longer drops a client's own `label` filters on Engine lists.** With `ownership.owner` set, every client value under the `label` list filter was replaced by the owner selector, so a lookup such as `label=com.docker.compose.service=side` returned every owned container, and a client that takes the first match acted on the wrong one. On `GET /containers/json`, `/images/json`, `/networks`, `/volumes` and the libpod container, image, pod, network and volume lists, the client values now reach the daemon after the owner and visibility selectors. Both engines require every `label` value to match there (Docker's `Args.MatchKVList`, Podman's `MatchLabelFilters`, read from source), so a kept value can only narrow the owned set. A value whose key is the owner label key is still dropped, in any of the spellings `key`, `key=value` and `key!=value`, with surrounding spaces. Swarm lists (`/services`, `/tasks`, `/secrets`, `/configs`, `/nodes`), `/events` and the prune endpoints are unchanged and still drop every client value. Malformed filters are still refused with `400`. Tested against a fake daemon with Docker's matching rule, not against a live daemon.
 
 ### Security
 
