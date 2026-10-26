@@ -28,7 +28,7 @@ Evidence inputs:
 - Sockguard base: `3854e684db275985b9f9d2e7a4f5962a1cd7d6e5`.
 - devcontainer-builder (DCB): `5ca13fc5c200417801b3dff2635cc83c5cec8df8`,
   `/workspaces/shared/tools/devcontainer-builder`.
-- Menagerie `epic/0.1.0`: `f714468e63fb5b81793f136f3f133b5df08b10c2`,
+- Menagerie `epic/0.1.0`: `10f93203173b0352ef2be644855cb65c7c219ebb`,
   `/workspaces/tools/menagerie`; design `docker-boundary`,
   `container-operations`, `template-hooks`, `initialize-command`, and risk
   `docs/risks/buildkit-traffic-not-inspectable.yml`.
@@ -44,6 +44,10 @@ repository slashes. Query parameters are not part of rule path matching.
 admits the route, subject to the listed content checks. This does not grant
 cross-container ownership or read visibility: deployment must configure those
 separately if required.
+
+The Menagerie design also requires bind-source revalidation at every start and
+restart. Route admission in this report does not prove that lifecycle guard;
+the fork's bind-policy work and acceptance tests must supply that evidence.
 
 | Method and path | DCB caller | Upgrade or inspected input | Policy result / requirement |
 | --- | --- | --- | --- |
