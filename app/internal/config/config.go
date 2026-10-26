@@ -794,6 +794,12 @@ type ExecRequestBodyConfig struct {
 	// values are compared but never included in denial reasons or logs. Names
 	// not represented here continue to follow AllowedEnvVars/DeniedEnvVars.
 	AllowedEnvValues []string `mapstructure:"allowed_env_values"`
+	// AllowAnyCommand, when true and AllowedCommands is empty, admits any
+	// exec argv on create and start. It lifts only the empty-allowlist
+	// gate: AllowPrivileged, AllowRootUser and the env checks still apply,
+	// and a non-empty AllowedCommands is not widened. It is independent of
+	// the global insecure_allow_body_blind_writes. See ArgvGateConfigured.
+	AllowAnyCommand bool `mapstructure:"allow_any_command"`
 }
 
 // ImagePullRequestBodyConfig configures inspection for POST /images/create.

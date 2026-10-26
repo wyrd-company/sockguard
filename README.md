@@ -58,6 +58,7 @@
 - **Where fork CI is pinned.** The `fork-ci workflow` block of the same test fails when `fork-ci.yml` gains a trigger, an action that is not a SHA-pinned `actions/*` or `docker/*` action, a permission, a secret or a push, or stops running one of its gates.
 - **Symlink bind sources.** Bind sources on container create, libpod container create and volume create are checked again after their symlinks are resolved. The proxy must see each allowlisted host path at the same path. See [Symlink bind sources](docs/content/docs/symlink-bind-sources.mdx).
 - **Badges, install commands and contact addresses** in this README, `SECURITY.md` and the issue template name upstream's releases, registries, website and maintainers. They do not describe this fork's images or reviewers.
+- **Exec with any command.** `request_body.exec.allow_any_command: true`, default off and settable per client profile, admits exec create and start with any argv while `allowed_commands` is empty. It does not lift the root-user, privileged or env checks or owner-label isolation, does not widen a non-empty `allowed_commands`, and is separate from `insecure_allow_body_blind_writes`. See [Configuration](docs/content/docs/configuration.mdx).
 - **Review.** `.github/CODEOWNERS` names the fork's final reviewer. `.github/FUNDING.yml` is empty; to support the project, sponsor [CodesWhat](https://github.com/sponsors/CodesWhat).
 
 <h2 align="center">Contents</h2>
