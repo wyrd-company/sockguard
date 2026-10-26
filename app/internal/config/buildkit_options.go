@@ -25,8 +25,9 @@ import "github.com/codeswhat/sockguard/app/internal/buildkitproxy"
 // InsecureAcceptOpaqueBuildkitTunnels.
 func (c BuildkitRequestBodyConfig) ToPolicy(build BuildRequestBodyConfig) buildkitproxy.Policy {
 	return buildkitproxy.Policy{
-		Control: c.Control.toPolicy(build),
-		Session: c.Session.toPolicy(),
+		Control:   c.Control.toPolicy(build),
+		Session:   c.Session.toPolicy(),
+		LLBBridge: c.LLBBridge.toPolicy(),
 	}
 }
 

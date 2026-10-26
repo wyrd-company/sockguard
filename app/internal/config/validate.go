@@ -932,6 +932,7 @@ func validateRequestBody(cfg *Config) []string {
 	errs = append(errs, validateRequestBodyConfig("request_body", cfg.RequestBody)...)
 	errs = append(errs, validateNetworkEndpointConfig(cfg)...)
 	errs = append(errs, validateBuildkitAckMutualExclusion(cfg)...)
+	errs = append(errs, validateBuildkitLLBBridge(cfg)...)
 	errs = append(errs, validateClientsConfig(cfg)...)
 	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
 		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))

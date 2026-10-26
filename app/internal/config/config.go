@@ -1117,6 +1117,9 @@ type BuildkitRequestBodyConfig struct {
 	// Session gates the services buildkitd calls back into the client for,
 	// reached over POST /session.
 	Session BuildkitSessionRequestBodyConfig `mapstructure:"session"`
+	// LLBBridge is the fork's opt-in LLBBridge passthrough on POST /grpc
+	// (buildkit_llbbridge.go). Client profiles only.
+	LLBBridge BuildkitLLBBridgeRequestBodyConfig `mapstructure:"llb_bridge"`
 }
 
 // BuildkitControlRequestBodyConfig gates moby.buildkit.v1.Control's Solve/
