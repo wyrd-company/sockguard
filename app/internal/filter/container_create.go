@@ -1865,7 +1865,8 @@ func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
 		if !bindPathAllowed(source, p.allowedBindMounts) {
 			return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 		}
-		if denyReason := denySymlinkedBindSourceReason("container create", "bind mount source", source, p.allowedBindMounts); denyReason != "" {
+		rawSource, _, _ := strings.Cut(bind, ":")
+		if denyReason := denySymlinkedBindSourceReason("container create", "bind mount source", rawSource, source, p.allowedBindMounts); denyReason != "" {
 			return denyReason
 		}
 	}
@@ -2007,7 +2008,7 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 		if !bindPathAllowed(source, p.allowedBindMounts) {
 			return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 		}
-		if denyReason := denySymlinkedBindSourceReason("container create", "bind mount source", source, p.allowedBindMounts); denyReason != "" {
+		if denyReason := denySymlinkedBindSourceReason("container create", "bind mount source", mount.Source, source, p.allowedBindMounts); denyReason != "" {
 			return denyReason
 		}
 	}
