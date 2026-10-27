@@ -8,6 +8,8 @@ relationships:
     - ../app/internal/filter/fork_endpoints_compose_test.go
     - ../app/internal/ownership/fork_endpoints_compose_test.go
     - ../app/internal/buildkitproxy/fork_endpoints_builder_test.go
+    - ../app/internal/cmd/fork_command_container_endpoints_test.go
+    - ../app/internal/ownership/paths.go
 ---
 
 # Menagerie Engine endpoint compatibility
@@ -309,7 +311,7 @@ All paths are relative to `pkg/host/dockercompose/` unless stated.
 | `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `GET /exec/{id}/json` | `exec.go:65,79,125` (`Host.Exec`), via `Execer` at `up.go:530`: `DetectHome`, `DetectContainerEnv` (`/bin/sh -c "cat /proc/1/environ"`), `PatchSystemEnv` (`/bin/sh -c <script>` as root, with stdin), user-env probe (`<login shell> -lic|-lc|-ic|-c ...`), lifecycle commands | Same as the single-container exec rows | Same exec setting as single container. Every Compose `Up` execs in the primary, including as root | Measured (10 exec sequences over two Ups, with wildcard argv templates as a stand-in for `allow_any_command`); denied without exec rules |
 | `POST /grpc`, `POST /session` | `composebuild.go:113` (`SolveDockerfile` per service with `build:`); `build.go:159` (`builder.Build` for a derived primary) | Control/Solve with `dockerfile.v0` and moby export (`Load=true`, no `LoadWriter`); derived primary uses LLBBridge | Service builds need only the exporter fix; a derived primary also needs the LLBBridge passthrough | Inferred (measured project had no builds) |
 | `POST /containers/{id}/restart` | `watch.go:218` (`Watch` restart actions) | `t` | Denied; no rule. Menagerie does not call `Watch` | Inferred; denial pinned by test |
-| `PUT /containers/{id}/archive` | `watch.go:260` (`Watch` sync actions) | Tar archive | Denied; no rule. Menagerie does not call `Watch` | Inferred; denial pinned by test |
+| `PUT /containers/{id}/archive` | `watch.go:260` (`Watch` sync actions) | Tar archive | No Compose rule; the [command-container](#command-containers) rule admits it. Menagerie does not call `Watch` | Inferred; denial without a rule pinned by test |
 
 Sweep: every method call on the package's Docker client
 (`h.client`, `s.host.client`, `cli`) in non-test files of
@@ -412,6 +414,26 @@ Keep the network and volume inspectors at their defaults. Do not grant
 disconnect, network and volume prune, and volume inspect, which DCB does not
 call. `TestForkEndpointsComposeBroadGrantsWiden` pins that difference.
 
+## Command containers
+
+Menagerie runs hook and command containers itself, outside DCB. Besides the
+single-container create, start and remove rules, they need:
+
+| Route | Use | Admission |
+| --- | --- | --- |
+| `POST /containers/*/attach` | Stream the command's stdio | Needs the top-level `insecure_allow_read_exfiltration: true` acknowledgment |
+| `POST /containers/*/wait` | Read the exit status | Rule only |
+| `PUT /containers/*/archive` | Copy files into the container | Rule; `request_body.container_archive` inspects every tar body |
+| `GET /containers/*/archive` | Copy files out of the container | Needs the top-level `insecure_allow_read_exfiltration: true` acknowledgment |
+
+The acknowledgment is global, not per profile. With `ownership.owner` set,
+every `/containers/{id}/...` route is checked against the owner label, so these
+routes reach only containers the profile owns.
+
+The template cache is not a bind source. Hooks copy template content into the
+container through the archive API, so the cache does not need an
+`allowed_bind_mounts` entry.
+
 ## Menagerie must avoid
 
 - Treating HTTP `/grpc` and `/session` admission as proof builds work or are
@@ -435,7 +457,8 @@ call. `TestForkEndpointsComposeBroadGrantsWiden` pins that difference.
   or `macvlan`/`ipvlan`/`host` network drivers.
 - An object root (`UserDataFolder`) outside `allowed_bind_mounts`, or one the
   daemon host cannot see at the same path.
-- Calling DCB `Watch`: its restart and archive-sync actions stay denied.
+- Calling DCB `Watch`: its restart action stays denied, and its archive sync
+  is not part of the audited Compose surface.
 - Assuming a local BuildKit context name authenticates its original host path.
 - Exposing the proxy/host Docker/SSH-agent sockets inside workspaces or hook
   containers.
@@ -451,6 +474,8 @@ Compose routes with DCB-shaped bodies, and each negative changes one field of a
 valid control. `TestForkEndpointsComposeBroadGrantsWiden` compares the narrow
 rows with broad grants. `TestForkEndpointsDCBLabelLookupsLoseClientLabels`
 pins the ownership filter result for DCB's lookup filters.
+`TestForkCommandContainerEndpointsReadExfiltrationAck` pins which
+command-container routes need the read-exfiltration acknowledgment.
 `TestForkEndpointsBuilderGatewayDenied` pins the gateway/unknown-method denial
 on both tunnels. `TestForkEndpointsBuilderExporterWireShape` pins the SDK wire
 incompatibility with an isolated positive control. Existing mediation and body
