@@ -371,7 +371,9 @@ bind-source agreement and per-workspace roots.
   plugin network drivers and volume driver options are denied by their own
   settings, which exceptions do not open.
 - Network create admits the built-in drivers `bridge`, `host`, `ipvlan`,
-  `macvlan` and `overlay`. No setting denies a built-in driver.
+  `macvlan` and `overlay` unless `request_body.network.allowed_drivers`
+  narrows them, for network create and for the networks a container create
+  attaches to. Exceptions do not open it.
 
 ## Logging and metrics
 
