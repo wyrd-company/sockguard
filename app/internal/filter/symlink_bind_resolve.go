@@ -4,10 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/bindfs"
 )
 
 // Fork-owned (wyrd-company/sockguard): symlink resolution of bind sources.
@@ -103,7 +104,7 @@ func walkBindSource(source string) (resolved string, created []string, err error
 			continue
 		}
 		next := path.Join(resolved, component.name)
-		info, err := os.Lstat(next)
+		info, err := bindfs.Lstat(next)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) && !component.fromLink {
 				created = append(created, next)
@@ -120,7 +121,7 @@ func walkBindSource(source string) (resolved string, created []string, err error
 		if hops > maxBindSymlinkHops {
 			return "", nil, fmt.Errorf("%w at %q", errBindSourceLoop, next)
 		}
-		target, err := os.Readlink(next)
+		target, err := bindfs.Readlink(next)
 		if err != nil {
 			return "", nil, classifyBindLookupError(next, err)
 		}
