@@ -13,9 +13,13 @@ import (
 // displace the proxy's selector. On the lists below no engine does that:
 // Docker's Args.MatchKVList and Podman's MatchLabelFilters both return false
 // unless every value matches (see internal/dockerfilters/injected.go). A kept
-// client value can therefore only narrow the owner-scoped result. Clients such
-// as devcontainer-builder find their containers only through these filters, so
-// dropping them returned every owned container to a lookup for one workspace.
+// client value can therefore only narrow the owner-scoped result. For /volumes
+// that holds for local volumes only: on a Swarm manager at API 1.42 or later,
+// dockerd also returns cluster volumes and lists them without applying the
+// filters, owner selector included (moby daemon/cluster/volumes.go). Keeping
+// client values does not widen that. Clients such as devcontainer-builder find
+// their containers only through these filters, so dropping them returned every
+// owned container to a lookup for one workspace.
 //
 // Swarm lists, /events (Podman ORs event filters) and the prune endpoints are
 // not listed and keep the upstream drop.
