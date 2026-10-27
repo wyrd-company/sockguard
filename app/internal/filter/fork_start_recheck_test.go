@@ -52,7 +52,12 @@ func newForkStartRecheckFixture(t *testing.T) *forkStartRecheckFixture {
 // way a writer would after create. name may hold a "/".
 func (f *forkStartRecheckFixture) swap(name, target string) {
 	f.t.Helper()
-	dir := filepath.Join(f.ws, name)
+	f.swapPath(filepath.Join(f.ws, name), target)
+}
+
+// swapPath is swap for any directory.
+func (f *forkStartRecheckFixture) swapPath(dir, target string) {
+	f.t.Helper()
 	if err := os.Rename(dir, dir+".orig"); err != nil {
 		f.t.Fatal(err)
 	}
@@ -129,10 +134,15 @@ func (d *forkStartRecheckDaemon) transport() http.RoundTripper {
 // the cleaned source and HostConfig.Binds the spec as written.
 func inspectBody(t *testing.T, mounts []ForkStartRecheckMount, binds []string, hostMounts []ForkStartRecheckMount) string {
 	t.Helper()
-	body, err := json.Marshal(ForkStartRecheckContainer{
+	return inspectBodyOf(t, ForkStartRecheckContainer{
 		HostConfig: ForkStartRecheckHostConfig{Binds: binds, Mounts: hostMounts},
 		Mounts:     mounts,
 	})
+}
+
+func inspectBodyOf(t *testing.T, container ForkStartRecheckContainer) string {
+	t.Helper()
+	body, err := json.Marshal(container)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,6 +169,11 @@ func send(t *testing.T, policy PolicyConfig, method, target, body string) forkSt
 
 func sendLogged(t *testing.T, logger *slog.Logger, policy PolicyConfig, method, target, body string) forkStartRecheckResult {
 	t.Helper()
+	return serveForkStartRecheck(t, logger, policy, httptest.NewRequest(method, target, strings.NewReader(body)))
+}
+
+func serveForkStartRecheck(t *testing.T, logger *slog.Logger, policy PolicyConfig, req *http.Request) forkStartRecheckResult {
+	t.Helper()
 	rule, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionAllow})
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +185,6 @@ func sendLogged(t *testing.T, logger *slog.Logger, policy PolicyConfig, method, 
 			forwarded = true
 			w.WriteHeader(http.StatusNoContent)
 		}))
-	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	meta := &logging.RequestMeta{}
 	req = req.WithContext(logging.WithMeta(req.Context(), meta))
 	rec := httptest.NewRecorder()
