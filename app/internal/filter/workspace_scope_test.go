@@ -519,10 +519,33 @@ func TestWorkspaceScopeComposeStagingRoot(t *testing.T) {
 	other := staged(WorkspaceHeader, beta)
 	other.hostConfig["Binds"] = []string{beta + "/src:/src"}
 	h.deny(opts, other, "outside this workspace's folder")
-	// W's own folder under the staging root is not inside W, so a staged
-	// bind still breaks the exception's bind agreement unless the folder is
-	// one of W's extraBindSources (contract B(a)).
+	// W's own folder under the staging root counts as inside W for the bind
+	// agreement, so a staged bind keeps the exception with no
+	// extraBindSources entry; the throwaway header still never grants.
 	priv := staged(WorkspaceHeader, f.alpha)
 	priv.hostConfig["Privileged"] = true
-	h.deny(opts, priv, "privileged containers are not allowed", "workspace exception not applied")
+	h.admit(opts, priv)
+	privThrowaway := staged(WorkspaceThrowawayHeader, f.alpha)
+	privThrowaway.hostConfig["Privileged"] = true
+	h.deny(opts, privThrowaway, "privileged containers are not allowed")
+}
+
+// A devcontainer binding its own socket folder keeps its exception; another
+// workspace's socket folder breaks the agreement and is denied by scoping.
+func TestWorkspaceExceptionOwnFoldersUnderRootsAgree(t *testing.T) {
+	h, sockets := newScopeHarness(t, privilegedGrant)
+	opts := h.scopeOptions(sockets, nil)
+	request := func(binds ...string) wsCreate {
+		req := scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}, binds...)
+		req.hostConfig["Privileged"] = true
+		return req
+	}
+	h.admit(opts, request(h.f.alpha+":/w", filepath.Join(sockets, "alpha")+":/run/sockets"))
+	h.admit(opts, request(h.f.alpha+":/w", filepath.Join(sockets, "alpha", "sub")+":/run/sub"))
+	h.deny(opts, request(h.f.alpha+":/w", filepath.Join(sockets, "beta")+":/run/sockets"), "privileged containers are not allowed", "workspace exception not applied")
+	unprivileged := request(h.f.alpha+":/w", filepath.Join(sockets, "beta")+":/run/sockets")
+	delete(unprivileged.hostConfig, "Privileged")
+	h.deny(opts, unprivileged, "outside this workspace's folder")
+	// The own socket folder alone is not the workspace mount.
+	h.deny(opts, request(filepath.Join(sockets, "alpha")+":/run/sockets"), "no bind source is the workspace")
 }
