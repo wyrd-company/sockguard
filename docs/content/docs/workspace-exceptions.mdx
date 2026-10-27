@@ -235,13 +235,17 @@ Compose staging folder, follow the base allowlist as before.
   scoping narrows an entry at or under a root to the request's folder, and an
   entry above a root cannot be narrowed that way. List the roots and the
   folders beside them instead.
-- A throwaway request uses `W`'s `extraBindSources` for scoping only. They do
-  not widen its allowlist.
+- A throwaway request gets none of `W`'s `extraBindSources`: they are an
+  exception.
+- Each of `W`'s folders under a per-workspace root must not be a symlink. A
+  request whose folder is one is denied, since the bind checks would follow
+  it into whatever it points at. A folder that does not exist yet is fine.
 - The deny reasons name the cause and do not repeat the label values:
   `labels devcontainer.local_folder and menagerie.throwaway.workspace cannot both be set`,
   `label menagerie.throwaway.workspace does not name a workspace under the workspace root`,
   `a host path under a per-workspace root needs a workspace label (...)`,
-  `a host path under a per-workspace root is outside this workspace's folder (...)`.
+  `a host path under a per-workspace root is outside this workspace's folder (...)`,
+  `this workspace's folder under a per-workspace root is not a canonical directory`.
 - A block without `apply_workspace_exceptions` is not scoped.
 
 ## Composition with the base policy
