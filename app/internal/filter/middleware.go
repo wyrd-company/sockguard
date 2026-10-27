@@ -443,6 +443,9 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// crafted body can never reach the wrong family's gates regardless
 		// of which shape it carries.
 		{http.MethodPost, matchesLibpodContainerCreateInspection, inspectSeverityCritical, newLibpodContainerCreatePolicy(cfg.LibpodContainerCreate).inspect, "failed to inspect libpod container create request body", "unable to inspect libpod container create request body"},
+		// Fork-owned: the workspace header on exec, ahead of the exec
+		// inspector in the same bucket (fork_exec_workspace.go).
+		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newForkExecWorkspacePolicy(cfg).inspect, "failed to check the exec workspace header", "unable to check the exec workspace header"},
 		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
 		// GET /distribution/{name}/json makes the daemon contact the registry

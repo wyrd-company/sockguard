@@ -5,6 +5,8 @@ package filter
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -197,36 +199,122 @@ func TestWorkspaceScopeThrowawayLabel(t *testing.T) {
 		"missing folder": filepath.Join(h.f.root, "delta"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			h.deny(opts, scopedRequest(map[string]string{WorkspaceThrowawayLabel: value}, h.f.outside+":/data"), "label "+WorkspaceThrowawayLabel)
+			for _, header := range []string{WorkspaceHeader, WorkspaceThrowawayHeader} {
+				req := scopedRequest(nil, h.f.outside+":/data")
+				req.headers = map[string][]string{header: {value}}
+				if reason := h.deny(opts, req, "the workspace header does not name a valid workspace"); strings.Contains(reason, value) {
+					t.Fatalf("reason quotes the header: %q", reason)
+				}
+			}
 		})
 	}
 }
 
-func TestWorkspaceScopeBothLabelsDenied(t *testing.T) {
-	h, sockets := newScopeHarness(t, nil)
-	reason := h.deny(h.scopeOptions(sockets, nil), scopedRequest(map[string]string{
-		WorkspaceLocalFolderLabel: h.f.alpha, WorkspaceThrowawayLabel: h.f.alpha,
-	}, h.f.outside+":/data"), "cannot both be set")
-	if strings.Contains(reason, h.f.alpha) {
-		t.Fatalf("deny reason must not echo the label values: %q", reason)
+// The throwaway header never grants, even with an entry for W that grants
+// privileged, and even when the container carries the devcontainer label.
+func TestWorkspaceThrowawayHeaderNeverGrants(t *testing.T) {
+	h, sockets := newScopeHarness(t, privilegedGrant)
+	opts := h.scopeOptions(sockets, nil)
+	for _, labels := range []map[string]string{nil, {WorkspaceLocalFolderLabel: h.f.alpha}, {WorkspaceThrowawayLabel: h.f.alpha}} {
+		req := scopedRequest(labels, h.f.alpha+":/w")
+		req.hostConfig["Privileged"] = true
+		req.headers = map[string][]string{WorkspaceThrowawayHeader: {h.f.alpha}}
+		h.deny(opts, req, "privileged containers are not allowed")
+		delete(req.hostConfig, "Privileged")
+		h.admit(opts, req)
 	}
 }
 
-func TestWorkspaceScopeNoLabel(t *testing.T) {
+// devcontainer.local_folder and menagerie.throwaway.workspace must be absent
+// or equal the header's workspace.
+func TestWorkspaceLabelsAgreeWithHeader(t *testing.T) {
+	h, sockets := newScopeHarness(t, privilegedGrant)
+	opts := h.scopeOptions(sockets, nil)
+	withHeader := func(labels map[string]string) wsCreate {
+		req := scopedRequest(labels, h.f.alpha+":/w")
+		req.headers = map[string][]string{WorkspaceHeader: {h.f.alpha}}
+		return req
+	}
+	for _, label := range []string{WorkspaceLocalFolderLabel, WorkspaceThrowawayLabel} {
+		for name, value := range map[string]string{"another workspace": h.f.beta, "trailing slash": h.f.alpha + "/", "empty": ""} {
+			t.Run(label+" "+name, func(t *testing.T) {
+				reason := h.deny(opts, withHeader(map[string]string{label: value}), "workspace label "+label+" disagrees with the request's workspace")
+				if value != "" && strings.Contains(reason, value) {
+					t.Fatalf("reason quotes a value: %q", reason)
+				}
+			})
+		}
+	}
+	h.admit(opts, withHeader(nil))
+	h.admit(opts, withHeader(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}))
+	h.admit(opts, withHeader(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha, WorkspaceThrowawayLabel: h.f.alpha}))
+	// The grant follows the header: a privileged create for alpha with no
+	// label is matched.
+	priv := withHeader(nil)
+	priv.hostConfig["Privileged"] = true
+	h.admit(opts, priv)
+}
+
+func TestWorkspaceBothHeadersDenied(t *testing.T) {
 	h, sockets := newScopeHarness(t, nil)
 	opts := h.scopeOptions(sockets, nil)
-	h.deny(opts, scopedRequest(nil, h.f.alpha+":/w"), "needs a workspace label")
-	h.deny(opts, scopedRequest(nil, filepath.Join(sockets, "alpha")+":/run/s"), "needs a workspace label")
-	// A label that is not a workspace key gives no identity.
-	h.deny(opts, scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha + "/"}, h.f.alpha+":/w"), "needs a workspace label")
-	// Binds outside every per-workspace root still follow the base policy.
-	h.admit(opts, scopedRequest(nil, h.f.outside+":/data", h.f.staging+":/staging"))
-	h.admit(opts, wsCreate{hostConfig: map[string]any{"Binds": []string{"named:/data"}}})
+	for name, headers := range map[string]map[string][]string{
+		"both headers":       {WorkspaceHeader: {h.f.alpha}, WorkspaceThrowawayHeader: {h.f.alpha}},
+		"repeated header":    {WorkspaceHeader: {h.f.alpha, h.f.alpha}},
+		"repeated throwaway": {WorkspaceThrowawayHeader: {h.f.alpha, h.f.beta}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := scopedRequest(nil, h.f.outside+":/data")
+			req.headers = headers
+			if reason := h.deny(opts, req, "the request names more than one workspace"); strings.Contains(reason, h.f.alpha) {
+				t.Fatalf("deny reason must not echo the header: %q", reason)
+			}
+		})
+	}
+	empty := scopedRequest(nil, h.f.outside+":/data")
+	empty.headers = map[string][]string{WorkspaceHeader: {""}}
+	h.deny(opts, empty, "the workspace header does not name a valid workspace")
+}
+
+// A create without a workspace header is denied in the profile, whatever it
+// binds and whatever labels it carries, an empty body included.
+func TestWorkspaceHeaderlessCreateDenied(t *testing.T) {
+	h, sockets := newScopeHarness(t, nil)
+	opts := h.scopeOptions(sockets, nil)
+	for name, req := range map[string]wsCreate{
+		"binds under a root":   scopedRequest(nil, h.f.alpha+":/w"),
+		"binds outside roots":  scopedRequest(nil, h.f.outside+":/data"),
+		"no binds":             {},
+		"label only":           scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}, h.f.alpha+":/w"),
+		"throwaway label only": scopedRequest(map[string]string{WorkspaceThrowawayLabel: h.f.alpha}, h.f.alpha+":/w"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req.headers = map[string][]string{}
+			h.deny(opts, req, "the request names no workspace")
+		})
+	}
+	for name, body := range map[string]string{"empty body": "", "malformed body": "{"} {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+			reason, err := newContainerCreatePolicy(opts).inspectWithWorkspaceExceptions(testLogger(), r, "/containers/create")
+			if err != nil || !strings.Contains(reason, "the request names no workspace") {
+				t.Fatalf("reason %q err %v", reason, err)
+			}
+		})
+	}
+	// With a header, binds outside every per-workspace root still follow the
+	// base policy.
+	req := scopedRequest(nil, h.f.outside+":/data", h.f.staging+":/staging")
+	req.headers = map[string][]string{WorkspaceHeader: {h.f.gamma}}
+	h.admit(opts, req)
 }
 
 func TestWorkspaceScopeProfileWithoutApplyUnchanged(t *testing.T) {
 	h, sockets := newScopeHarness(t, nil)
 	off := h.scopeOptions(sockets, func(o *ContainerCreateOptions) { o.ApplyWorkspaceExceptions = false })
+	headerless := scopedRequest(nil, h.f.alpha+":/w")
+	headerless.headers = map[string][]string{}
+	h.admit(off, headerless)
 	// require_no_restart_policy alone sends the request through the wrapper
 	// too; it must not scope binds either.
 	restartOnly := h.scopeOptions(sockets, func(o *ContainerCreateOptions) {

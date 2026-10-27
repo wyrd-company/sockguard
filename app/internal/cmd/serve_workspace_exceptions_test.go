@@ -127,6 +127,19 @@ func TestAttachWorkspaceExceptionsReachesDefaultAndProfiles(t *testing.T) {
 	if profiles["sample"].ContainerCreate.WorkspaceExceptions != nil {
 		t.Fatal("the caller's profile map must not be modified")
 	}
+	// Only a block that applies exceptions gets the start re-check scope.
+	if opts.ForkStartRecheck.Workspace != nil || opts.Profiles["sample"].ForkStartRecheck.Workspace != nil {
+		t.Fatal("a block without apply_workspace_exceptions must not get the start re-check scope")
+	}
+	applied := filter.Options{Profiles: map[string]filter.Policy{"menagerie": {}}}
+	applied.ContainerCreate.ApplyWorkspaceExceptions = true
+	menagerie := applied.Profiles["menagerie"]
+	menagerie.ContainerCreate.ApplyWorkspaceExceptions = true
+	applied.Profiles["menagerie"] = menagerie
+	applied = attachWorkspaceExceptions(applied, store)
+	if applied.ForkStartRecheck.Workspace == nil || applied.Profiles["menagerie"].ForkStartRecheck.Workspace == nil {
+		t.Fatal("a block with apply_workspace_exceptions must get the start re-check scope")
+	}
 	if got := attachWorkspaceExceptions(filter.Options{Profiles: profiles}, nil); got.ContainerCreate.WorkspaceExceptions != nil {
 		t.Fatal("a nil store attaches nothing")
 	}
@@ -180,7 +193,9 @@ func TestServeChainAppliesWorkspaceExceptions(t *testing.T) {
 			defer teardown()
 			post := func(ws string) int {
 				rec := httptest.NewRecorder()
-				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1.51/containers/create", strings.NewReader(f.createBody(ws))))
+				r := httptest.NewRequest(http.MethodPost, "/v1.51/containers/create", strings.NewReader(f.createBody(ws)))
+				r.Header.Set(filter.WorkspaceHeader, ws)
+				handler.ServeHTTP(rec, r)
 				return rec.Code
 			}
 			if code := post(f.alpha); code != http.StatusCreated {
@@ -192,9 +207,20 @@ func TestServeChainAppliesWorkspaceExceptions(t *testing.T) {
 			// Scoping: alpha's label may not bind gamma's folder.
 			rec := httptest.NewRecorder()
 			crossBody := `{"Image":"busybox","Labels":{"devcontainer.local_folder":"` + f.alpha + `"},"HostConfig":{"Binds":["` + f.alpha + `:/w","` + gamma + `:/other"]}}`
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1.51/containers/create", strings.NewReader(crossBody)))
+			cross := httptest.NewRequest(http.MethodPost, "/v1.51/containers/create", strings.NewReader(crossBody))
+			cross.Header.Set(filter.WorkspaceHeader, f.alpha)
+			handler.ServeHTTP(rec, cross)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("cross-workspace bind: status %d, want 403", rec.Code)
+			}
+			// A create and a start without the workspace header are denied
+			// before the daemon is read.
+			for _, path := range []string{"/v1.51/containers/create", "/v1.51/containers/sample/start"} {
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(f.createBody(f.alpha))))
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("%s without a workspace header: status %d, want 403", path, rec.Code)
+				}
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())

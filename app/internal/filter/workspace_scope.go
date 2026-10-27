@@ -2,6 +2,7 @@ package filter
 
 import (
 	"errors"
+	"net/http"
 	"path"
 	"slices"
 	"strings"
@@ -13,7 +14,7 @@ import (
 // matched or not, has its binds under a per-workspace root scoped to its own
 // workspace: a host path under root R must be inside R/<basename W> or inside
 // one of W's extraBindSources. W is the request's workspace identity
-// (workspaceIdentity). A request with no identity may not bind anything
+// (WorkspaceFromHeaders). A request with no identity may not bind anything
 // under a per-workspace root.
 //
 // The check reuses the bind checks the base policy runs: it runs them again
@@ -23,60 +24,117 @@ import (
 // code that admits them. It runs after the effective policy has admitted the
 // request, so a failure here is a scoping failure and nothing else.
 
-// WorkspaceThrowawayLabel names the workspace of a command container. It
-// scopes binds like devcontainer.local_folder and never grants an exception.
+// WorkspaceThrowawayLabel is the label a command container may carry. When
+// present it must equal the request's workspace, as devcontainer.local_folder
+// must.
 const WorkspaceThrowawayLabel = "menagerie.throwaway.workspace"
 
-// WorkspaceIdentityKind says where a request's workspace identity came from.
+// The request headers that name the workspace W. The workspace manager sets
+// them on its own Docker client; a container label can be written by
+// whoever writes the container's configuration, so it is never identity.
+const (
+	// WorkspaceHeader names W for a devcontainer job. Exceptions apply only
+	// under this header.
+	WorkspaceHeader = "X-Sockguard-Workspace"
+	// WorkspaceThrowawayHeader names W for a command container. It scopes
+	// binds and never grants an exception.
+	WorkspaceThrowawayHeader = "X-Sockguard-Throwaway-Workspace"
+)
+
+// WorkspaceIdentityKind says which header named the workspace.
 type WorkspaceIdentityKind string
 
 const (
-	// WorkspaceIdentityNone: the request names no workspace.
+	// WorkspaceIdentityNone: no workspace.
 	WorkspaceIdentityNone WorkspaceIdentityKind = "none"
-	// WorkspaceIdentityDevcontainer: devcontainer.local_folder names a
-	// workspace. Only this kind can match an exception.
+	// WorkspaceIdentityDevcontainer: X-Sockguard-Workspace. Only this kind
+	// can match an exception.
 	WorkspaceIdentityDevcontainer WorkspaceIdentityKind = "devcontainer"
-	// WorkspaceIdentityThrowaway: menagerie.throwaway.workspace names a
-	// workspace. It scopes binds and never matches an exception.
+	// WorkspaceIdentityThrowaway: X-Sockguard-Throwaway-Workspace. It
+	// scopes binds and never matches an exception.
 	WorkspaceIdentityThrowaway WorkspaceIdentityKind = "throwaway"
 )
 
 // WorkspaceIdentity is a request's workspace: Kind and, unless Kind is none,
-// the workspace path W.
+// the workspace path W as the header gives it.
 type WorkspaceIdentity struct {
 	Kind      WorkspaceIdentityKind
 	Workspace string
 }
 
-// workspaceIdentity is the one place a create's workspace identity is read.
-// It returns a deny reason when the identity is ambiguous or malformed:
-//
-//   - both labels are present;
-//   - menagerie.throwaway.workspace is not a workspace key (absolute, clean,
-//     a direct child of the workspace root) or not a canonical directory.
-//
-// A devcontainer.local_folder value that is not a workspace key gives no
-// identity: the request is then scoped as one that names no workspace, and
-// matches no exception. The reasons do not echo the label values.
-func workspaceIdentity(labels map[string]string, snap *WorkspaceExceptionSnapshot) (WorkspaceIdentity, string) {
-	folder, hasFolder := labels[WorkspaceLocalFolderLabel]
-	throwaway, hasThrowaway := labels[WorkspaceThrowawayLabel]
+// WorkspaceHeaderProblem is why WorkspaceFromHeaders found no workspace.
+type WorkspaceHeaderProblem string
+
+const (
+	WorkspaceHeaderOK        WorkspaceHeaderProblem = ""
+	WorkspaceHeaderMissing   WorkspaceHeaderProblem = "missing"
+	WorkspaceHeaderAmbiguous WorkspaceHeaderProblem = "ambiguous"
+	WorkspaceHeaderEmpty     WorkspaceHeaderProblem = "empty"
+)
+
+// WorkspaceFromHeaders is the one reader of the workspace headers, for create,
+// exec and the start re-check. Exactly one of the two headers, with exactly
+// one non-empty value, names W. It checks no path rule; see
+// checkWorkspaceIdentity.
+func WorkspaceFromHeaders(header http.Header) (WorkspaceIdentity, WorkspaceHeaderProblem) {
+	devcontainer := header.Values(WorkspaceHeader)
+	throwaway := header.Values(WorkspaceThrowawayHeader)
 	switch {
-	case hasFolder && hasThrowaway:
-		return WorkspaceIdentity{Kind: WorkspaceIdentityNone}, "container create denied: labels " + WorkspaceLocalFolderLabel + " and " + WorkspaceThrowawayLabel + " cannot both be set"
-	case hasThrowaway:
-		if checkWorkspaceKey(throwaway, snap.workspaceRoot()) != nil {
-			return WorkspaceIdentity{Kind: WorkspaceIdentityNone}, "container create denied: label " + WorkspaceThrowawayLabel + " does not name a workspace under the workspace root"
-		}
-		if cause, _ := checkWorkspaceFolder(throwaway); cause != "" {
-			return WorkspaceIdentity{Kind: WorkspaceIdentityNone}, "container create denied: label " + WorkspaceThrowawayLabel + " names a workspace that is not a canonical directory"
-		}
-		return WorkspaceIdentity{Kind: WorkspaceIdentityThrowaway, Workspace: throwaway}, ""
-	case hasFolder && checkWorkspaceKey(folder, snap.workspaceRoot()) == nil:
-		return WorkspaceIdentity{Kind: WorkspaceIdentityDevcontainer, Workspace: folder}, ""
-	default:
-		return WorkspaceIdentity{Kind: WorkspaceIdentityNone}, ""
+	case len(devcontainer) == 0 && len(throwaway) == 0:
+		return WorkspaceIdentity{Kind: WorkspaceIdentityNone}, WorkspaceHeaderMissing
+	case len(devcontainer)+len(throwaway) > 1:
+		return WorkspaceIdentity{Kind: WorkspaceIdentityNone}, WorkspaceHeaderAmbiguous
 	}
+	id := WorkspaceIdentity{Kind: WorkspaceIdentityDevcontainer}
+	if len(throwaway) == 1 {
+		id = WorkspaceIdentity{Kind: WorkspaceIdentityThrowaway, Workspace: throwaway[0]}
+	} else {
+		id.Workspace = devcontainer[0]
+	}
+	if id.Workspace == "" {
+		return WorkspaceIdentity{Kind: WorkspaceIdentityNone}, WorkspaceHeaderEmpty
+	}
+	return id, WorkspaceHeaderOK
+}
+
+// workspaceHeaderDenyReason reads and checks W for subject ("container
+// create", "exec create", ...). The reasons name the cause and never quote a
+// header value.
+func workspaceHeaderDenyReason(header http.Header, snap *WorkspaceExceptionSnapshot, subject string) (WorkspaceIdentity, string) {
+	id, problem := WorkspaceFromHeaders(header)
+	switch problem {
+	case WorkspaceHeaderMissing:
+		return id, subject + " denied: the request names no workspace (set " + WorkspaceHeader + " or " + WorkspaceThrowawayHeader + ")"
+	case WorkspaceHeaderAmbiguous:
+		return id, subject + " denied: the request names more than one workspace"
+	case WorkspaceHeaderEmpty:
+		return id, subject + " denied: the workspace header does not name a valid workspace"
+	}
+	if !checkWorkspaceIdentity(id.Workspace, snap) {
+		return WorkspaceIdentity{Kind: WorkspaceIdentityNone}, subject + " denied: the workspace header does not name a valid workspace"
+	}
+	return id, ""
+}
+
+// checkWorkspaceIdentity applies the exception-key rules to W: absolute,
+// clean, a direct child of the workspace root, and a canonical directory.
+func checkWorkspaceIdentity(workspace string, snap *WorkspaceExceptionSnapshot) bool {
+	if checkWorkspaceKey(workspace, snap.workspaceRoot()) != nil {
+		return false
+	}
+	cause, _ := checkWorkspaceFolder(workspace)
+	return cause == ""
+}
+
+// workspaceLabelDenyReason requires each identity label to be absent or equal
+// W. The reason names the label, not its value.
+func workspaceLabelDenyReason(labels map[string]string, id WorkspaceIdentity, subject string) string {
+	for _, label := range []string{WorkspaceLocalFolderLabel, WorkspaceThrowawayLabel} {
+		if value, ok := labels[label]; ok && value != id.Workspace {
+			return subject + " denied: workspace label " + label + " disagrees with the request's workspace"
+		}
+	}
+	return ""
 }
 
 func (s *WorkspaceExceptionSnapshot) workspaceRoot() string {
@@ -227,7 +285,7 @@ func DenyWorkspaceScopeReason(snap *WorkspaceExceptionSnapshot, id WorkspaceIden
 	}
 	detail := strings.TrimPrefix(reason, "container create denied: ")
 	if id.Kind == WorkspaceIdentityNone {
-		return "container create denied: a host path under a per-workspace root needs a workspace label (" + detail + ")"
+		return "container create denied: a host path under a per-workspace root needs a workspace (" + detail + ")"
 	}
 	return "container create denied: a host path under a per-workspace root is outside this workspace's folder (" + detail + ")"
 }
