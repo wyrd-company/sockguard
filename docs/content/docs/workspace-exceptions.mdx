@@ -198,9 +198,11 @@ The header names are fixed; there is no setting for them.
   with `workspace label <label> disagrees with the request's workspace`.
 - These requests are denied without a valid header:
   - Docker-compat `POST /containers/create`;
-  - exec create and exec start, Docker-compat and libpod;
-  - container start and restart, which the start re-check covers (see
-    [Re-check at start and restart](/symlink-bind-sources#re-check-at-start-and-restart)).
+  - exec create and exec start, Docker-compat and libpod.
+- Container start and restart belong to the start re-check (see
+  [Re-check at start and restart](/symlink-bind-sources#re-check-at-start-and-restart)).
+  It reads the same headers, with the same reader, once its workspace scope
+  is set; the store provides that scope.
 - `/grpc` and `/session` (BuildKit) need no header: no container is created
   there.
 - Deny reasons name the cause and never quote a header value:
@@ -217,8 +219,10 @@ A create gets the grants of entry `W` when all of these are true:
    `X-Sockguard-Workspace` names `W` (see [Workspace identity](#workspace-identity)).
    The value is byte-equal to the entry's `workspace`; it is not cleaned.
 2. The match-time workspace rules pass.
-3. Every host path the create mounts resolves inside `W` or inside one of
-   `W`'s `extraBindSources`: `HostConfig.Binds` sources, `HostConfig.Mounts`
+3. Every host path the create mounts resolves inside `W`, inside `W`'s own
+   folder under a per-workspace root (`<root>/<basename W>`, see
+   [Per-workspace roots](#per-workspace-roots)), or inside one of `W`'s
+   `extraBindSources`: `HostConfig.Binds` sources, `HostConfig.Mounts`
    binds, host-path `Config.Volumes` keys, overlay directories, and the bind
    device and overlay directories of a `local` volume. The checks and the
    symlink resolution are the ones the bind allowlist uses (see
@@ -256,6 +260,9 @@ allowlist as before.
   matches and whether or not the file is valid: the roots come from the
   configuration, so a missing or invalid file removes only the grants, never
   the scoping.
+- `W`'s own folder under every per-workspace root also counts as inside `W`
+  for exception matching, so binding the own socket or staging folder keeps
+  the exception; another workspace's folder breaks it.
 - `extraBindSources` are a grant. They count only when the exception applies:
   the devcontainer header, an entry for `W`, and a passing match. A create
   whose match fails, and every throwaway request, gets none.
@@ -376,9 +383,9 @@ bind-source agreement and per-workspace roots.
   request for another workspace cannot reach them. The staging root must be
   in `per_workspace_roots` and `allowed_bind_mounts`, at the same path for the
   daemon host and the proxy.
-- `W`'s staging folder is not inside `W`, so under the bind agreement rule a
-  service that mounts a staged config or secret matches an exception only
-  when `<staging root>/<basename W>` is in its entry's `extraBindSources`.
+- `W`'s own staging folder counts as inside `W` for the bind agreement, so a
+  service that mounts a staged config or secret keeps its exception with no
+  `extraBindSources` entry. The same holds for its own socket folder.
 - `restart:` goes through `require_no_restart_policy` and the `restartPolicy`
   grant.
 - `extra_hosts` and `group_add` are always denied. Static network addresses
@@ -423,7 +430,7 @@ exception` line with:
   the entry's `workspace`: the resolved root plus the folder name.
 - The workspace manager sets the header on the Docker client it uses for a
   workspace. A client it does not control (a build helper's own client, for
-  example) gets no create, exec, start or restart in the profile.
+  example) gets no create or exec in the profile.
 - Keep a bind-type workspace mount. A create that mounts the workspace only
   through a named volume does not match.
 - Containers that should never get an exception, such as command containers
