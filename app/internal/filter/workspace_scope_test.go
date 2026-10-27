@@ -178,6 +178,12 @@ func TestWorkspaceScopeNoLabel(t *testing.T) {
 func TestWorkspaceScopeProfileWithoutApplyUnchanged(t *testing.T) {
 	h, sockets := newScopeHarness(t, nil)
 	off := h.scopeOptions(sockets, func(o *ContainerCreateOptions) { o.ApplyWorkspaceExceptions = false })
+	// require_no_restart_policy alone sends the request through the wrapper
+	// too; it must not scope binds either.
+	restartOnly := h.scopeOptions(sockets, func(o *ContainerCreateOptions) {
+		o.ApplyWorkspaceExceptions, o.RequireNoRestartPolicy = false, true
+	})
+	h.admit(restartOnly, scopedRequest(nil, h.f.alpha+":/w", h.f.beta+":/b"))
 	for _, req := range []wsCreate{
 		scopedRequest(nil, h.f.alpha+":/w", h.f.beta+":/b"),
 		scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha, WorkspaceThrowawayLabel: h.f.beta}, h.f.beta+":/b"),
