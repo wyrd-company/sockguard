@@ -583,8 +583,9 @@ func checkSolveRemainingFields(req *control.SolveRequest) *mediationDenial {
 // deliberately NOT checked here — it needs the bridge's SessionRegistry and
 // SessionKey, which this decode-only, bridge-independent function has no
 // access to and shouldn't: see bridge.go's forwardControlMediated, which
-// calls this first and then separately consults
-// SessionRegistry.OwnsRef(b.session.Key, req.GetRef()) before admitting.
+// calls this first, then waits via SessionRegistry.waitForRef for an admitted
+// Solve to own the exact ref under the same trusted client identity and profile
+// before forwarding the original request frame.
 func evaluateStatusRequest(payload []byte) (*control.StatusRequest, *mediationDenial) {
 	req := &control.StatusRequest{}
 	if err := proto.Unmarshal(payload, req); err != nil {
