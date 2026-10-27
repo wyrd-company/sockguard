@@ -148,21 +148,30 @@ func TestWorkspaceExceptionDoesNotCrossWorkspaces(t *testing.T) {
 }
 
 // A forged devcontainer.local_folder label with bind sources outside that
-// workspace gets no exception, though the base allowlist admits the binds.
+// workspace gets no exception. Binds outside every per-workspace root are
+// still admitted by the base policy; binds into another workspace's folder
+// are denied by scoping.
 func TestWorkspaceExceptionForgedLabelBindsOutsideWorkspace(t *testing.T) {
 	h := newWSHarness(t, privilegedGrant)
-	for name, binds := range map[string][]string{
-		"only outside":           {h.f.outside + ":/data"},
-		"workspace plus outside": {h.f.alpha + ":/workspaces/project", h.f.outside + ":/data"},
-		"sibling workspace":      {h.f.alpha + ":/workspaces/project", h.f.gamma + ":/other"},
-		"dot-dot out":            {h.f.alpha + "/../gamma:/other"},
+	for name, tc := range map[string]struct {
+		binds  []string
+		scoped bool
+	}{
+		"only outside":           {[]string{h.f.outside + ":/data"}, false},
+		"workspace plus outside": {[]string{h.f.alpha + ":/workspaces/project", h.f.outside + ":/data"}, false},
+		"sibling workspace":      {[]string{h.f.alpha + ":/workspaces/project", h.f.gamma + ":/other"}, true},
+		"dot-dot out":            {[]string{h.f.alpha + "/../gamma:/other"}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := wsRequest(h.f.alpha, map[string]any{"Privileged": true})
-			req.hostConfig["Binds"] = binds
+			req.hostConfig["Binds"] = tc.binds
 			h.deny(h.options(nil), req, "privileged containers are not allowed", `workspace exception for "`+h.f.alpha+`" not applied`)
-			// Control: the base policy admits these binds.
 			delete(req.hostConfig, "Privileged")
+			if tc.scoped {
+				h.deny(h.options(nil), req, "outside this workspace's folder")
+				return
+			}
+			// Control: the base policy admits these binds.
 			h.admit(h.options(nil), req)
 		})
 	}
@@ -526,13 +535,13 @@ func TestWorkspaceExceptionDecisionLog(t *testing.T) {
 	if got := read(); len(got) != 1 || got[0]["workspace_exception"] != "none" || got[0]["decision"] != "deny" {
 		t.Fatalf("none log: %v", got)
 	}
-	forged := wsRequest(h.f.gamma, nil)
+	forged := wsRequest(h.f.outside, nil)
 	forged.labels[WorkspaceLocalFolderLabel] = h.f.alpha
 	h.admit(h.options(nil), forged)
 	if got := read(); len(got) != 1 || got[0]["workspace_exception"] != "not_applied:"+WorkspaceCauseBindSourceOutside || got[0]["approval_by_subject"] != nil {
 		t.Fatalf("not applied log: %v", got)
 	}
-	unlabeled := wsRequest(h.f.alpha, nil)
+	unlabeled := wsRequest(h.f.outside, nil)
 	unlabeled.labels = nil
 	h.admit(h.options(nil), unlabeled)
 	if got := read(); len(got) != 0 {

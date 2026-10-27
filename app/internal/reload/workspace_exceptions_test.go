@@ -18,6 +18,9 @@ func TestWorkspaceExceptionsIsImmutable(t *testing.T) {
 	for name, edit := range map[string]func(*config.Config){
 		"file": func(c *config.Config) { c.WorkspaceExceptions.File = "/srv/policy/workspace-exceptions.json" },
 		"root": func(c *config.Config) { c.WorkspaceExceptions.WorkspaceRoot = "/srv/workspaces" },
+		"per-workspace roots": func(c *config.Config) {
+			c.WorkspaceExceptions.PerWorkspaceRoots = []string{"/srv/workspaces", "/srv/workspace-sockets"}
+		},
 	} {
 		newCfg := config.Defaults()
 		edit(&newCfg)

@@ -10,6 +10,7 @@ func TestWorkspaceExceptionsConfigLoadsFromYAMLAndEnv(t *testing.T) {
 workspace_exceptions:
   file: /srv/policy/workspace-exceptions.json
   workspace_root: /srv/workspaces
+  per_workspace_roots: [/srv/workspaces, /srv/workspace-sockets]
 request_body:
   container_create:
     apply_workspace_exceptions: true
@@ -28,7 +29,8 @@ clients:
 	if err != nil {
 		t.Fatalf("LoadBytes: %v", err)
 	}
-	if cfg.WorkspaceExceptions.File != "/srv/policy/workspace-exceptions.json" || cfg.WorkspaceExceptions.WorkspaceRoot != "/srv/workspaces" {
+	if cfg.WorkspaceExceptions.File != "/srv/policy/workspace-exceptions.json" || cfg.WorkspaceExceptions.WorkspaceRoot != "/srv/workspaces" ||
+		len(cfg.WorkspaceExceptions.PerWorkspaceRoots) != 2 || cfg.WorkspaceExceptions.PerWorkspaceRoots[1] != "/srv/workspace-sockets" {
 		t.Fatalf("workspace_exceptions = %+v", cfg.WorkspaceExceptions)
 	}
 	for name, cc := range map[string]ContainerCreateRequestBodyConfig{
@@ -46,6 +48,7 @@ clients:
 
 	t.Setenv("SOCKGUARD_WORKSPACE_EXCEPTIONS_FILE", "/srv/env/workspace-exceptions.json")
 	t.Setenv("SOCKGUARD_WORKSPACE_EXCEPTIONS_WORKSPACE_ROOT", "/srv/env-workspaces")
+	t.Setenv("SOCKGUARD_WORKSPACE_EXCEPTIONS_PER_WORKSPACE_ROOTS", "/srv/env-workspaces,/srv/env-sockets")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_APPLY_WORKSPACE_EXCEPTIONS", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_NO_RESTART_POLICY", "true")
 	env, err := Load("/nonexistent-so-defaults-and-env-only.yaml")
@@ -53,7 +56,8 @@ clients:
 		t.Fatalf("Load: %v", err)
 	}
 	if env.WorkspaceExceptions.File != "/srv/env/workspace-exceptions.json" || env.WorkspaceExceptions.WorkspaceRoot != "/srv/env-workspaces" ||
-		!env.RequestBody.ContainerCreate.ApplyWorkspaceExceptions || !env.RequestBody.ContainerCreate.RequireNoRestartPolicy {
+		!env.RequestBody.ContainerCreate.ApplyWorkspaceExceptions || !env.RequestBody.ContainerCreate.RequireNoRestartPolicy ||
+		len(env.WorkspaceExceptions.PerWorkspaceRoots) != 2 || env.WorkspaceExceptions.PerWorkspaceRoots[1] != "/srv/env-sockets" {
 		t.Fatalf("env not honored: %+v %+v", env.WorkspaceExceptions, env.RequestBody.ContainerCreate)
 	}
 }
@@ -81,6 +85,29 @@ func TestValidateWorkspaceExceptions(t *testing.T) {
 		{"root trailing slash", func(c *Config) { valid(c); c.WorkspaceExceptions.WorkspaceRoot = "/srv/workspaces/" }, "workspace_exceptions.workspace_root must be an absolute, clean path"},
 		{"root without file", func(c *Config) { c.WorkspaceExceptions.WorkspaceRoot = "/srv/workspaces" }, "workspace_exceptions.workspace_root requires workspace_exceptions.file"},
 		{"apply without file", func(c *Config) { c.RequestBody.ContainerCreate.ApplyWorkspaceExceptions = true }, "request_body.container_create.apply_workspace_exceptions requires workspace_exceptions.file"},
+		{"roots without file", func(c *Config) { c.WorkspaceExceptions.PerWorkspaceRoots = []string{"/srv/workspaces"} }, "workspace_exceptions.per_workspace_roots requires workspace_exceptions.file"},
+		{"roots without workspace root", func(c *Config) {
+			valid(c)
+			c.WorkspaceExceptions.PerWorkspaceRoots = []string{"/srv/workspace-sockets"}
+		}, "workspace_exceptions.per_workspace_roots must include workspace_exceptions.workspace_root"},
+		{"root not clean", func(c *Config) {
+			valid(c)
+			c.WorkspaceExceptions.PerWorkspaceRoots = []string{"/srv/workspaces", "/srv/sockets/"}
+		}, "workspace_exceptions.per_workspace_roots[1] must be an absolute, clean path other than /"},
+		{"nested roots", func(c *Config) {
+			valid(c)
+			c.WorkspaceExceptions.PerWorkspaceRoots = []string{"/srv/workspaces", "/srv/workspaces/sockets"}
+		}, `workspace_exceptions.per_workspace_roots[1] "/srv/workspaces/sockets" repeats or is inside "/srv/workspaces"`},
+		{"allowlist entry above a root", func(c *Config) {
+			valid(c)
+			c.RequestBody.ContainerCreate.ApplyWorkspaceExceptions = true
+			c.RequestBody.ContainerCreate.AllowedBindMounts = []string{"/srv"}
+		}, `request_body.container_create.allowed_bind_mounts[0] "/srv" contains the per-workspace root "/srv/workspaces"`},
+		{"allowlist slash in a profile", func(c *Config) {
+			valid(c)
+			c.Clients.Profiles = []ClientProfileConfig{{Name: "sample", Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}},
+				RequestBody: RequestBodyConfig{ContainerCreate: ContainerCreateRequestBodyConfig{ApplyWorkspaceExceptions: true, AllowedBindMounts: []string{"/"}}}}}
+		}, `clients.profiles[0].request_body.container_create.allowed_bind_mounts[0] "/" contains the per-workspace root`},
 		{"profile apply without file", func(c *Config) {
 			c.Clients.Profiles = []ClientProfileConfig{{Name: "sample", Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}},
 				RequestBody: RequestBodyConfig{ContainerCreate: ContainerCreateRequestBodyConfig{ApplyWorkspaceExceptions: true}}}}
@@ -100,6 +127,26 @@ func TestValidateWorkspaceExceptions(t *testing.T) {
 	cfg.RequestBody.ContainerCreate.ApplyWorkspaceExceptions = true
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("valid block: %v", err)
+	}
+	// An entry above a root is fine in a block that does not opt in, and
+	// the root itself and folders beside it are fine in one that does.
+	cfg = Defaults()
+	valid(&cfg)
+	cfg.WorkspaceExceptions.PerWorkspaceRoots = []string{"/srv/workspaces", "/srv/workspace-sockets"}
+	cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{"/srv"}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("entry above a root without apply: %v", err)
+	}
+	cfg.RequestBody.ContainerCreate.ApplyWorkspaceExceptions = true
+	cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{"/srv/workspaces", "/srv/workspace-sockets", "/srv/template-cache"}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("roots and a sibling folder: %v", err)
+	}
+	if got := cfg.WorkspaceExceptions.EffectivePerWorkspaceRoots(); len(got) != 2 {
+		t.Fatalf("effective roots %v", got)
+	}
+	if got := (WorkspaceExceptionsConfig{WorkspaceRoot: "/srv/workspaces"}).EffectivePerWorkspaceRoots(); len(got) != 1 || got[0] != "/srv/workspaces" {
+		t.Fatalf("default effective roots %v", got)
 	}
 	// require_no_restart_policy needs no file.
 	cfg = Defaults()

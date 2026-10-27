@@ -111,8 +111,12 @@ const (
 // request takes one snapshot at admission and uses it for matching and for
 // its grants.
 type WorkspaceExceptionSnapshot struct {
-	state   WorkspaceExceptionsState
-	root    string
+	state WorkspaceExceptionsState
+	root  string
+	// roots are the per-workspace roots: binds under one are scoped to the
+	// request's workspace folder. They do not depend on the file, so every
+	// snapshot, missing or invalid too, carries them.
+	roots   []string
 	err     error
 	entries map[string]*workspaceExceptionEntry
 }
@@ -146,6 +150,7 @@ func (s *WorkspaceExceptionSnapshot) Len() int {
 type WorkspaceExceptionStore struct {
 	path     string
 	root     string
+	roots    []string
 	maxBytes int64
 	logger   *slog.Logger
 	observe  func(result string)
@@ -161,6 +166,10 @@ type WorkspaceExceptionStoreOptions struct {
 	// WorkspaceRoot is workspace_exceptions.workspace_root. It must be
 	// absolute and canonical: filepath.EvalSymlinks(root) == root.
 	WorkspaceRoot string
+	// PerWorkspaceRoots is workspace_exceptions.per_workspace_roots. Empty
+	// means [WorkspaceRoot]. Each root must be canonical, WorkspaceRoot must
+	// be one of them, and no root may sit inside another.
+	PerWorkspaceRoots []string
 	// MaxBytes bounds the file size (config.MaxConfigFileBytes).
 	MaxBytes int64
 	Logger   *slog.Logger
@@ -179,6 +188,10 @@ func NewWorkspaceExceptionStore(opts WorkspaceExceptionStoreOptions) (*Workspace
 	if err := checkWorkspaceRoot(opts.WorkspaceRoot); err != nil {
 		return nil, err
 	}
+	roots, err := checkPerWorkspaceRoots(opts.WorkspaceRoot, opts.PerWorkspaceRoots)
+	if err != nil {
+		return nil, err
+	}
 	if opts.MaxBytes <= 0 {
 		return nil, errors.New("workspace exceptions file size bound must be positive")
 	}
@@ -188,6 +201,7 @@ func NewWorkspaceExceptionStore(opts WorkspaceExceptionStoreOptions) (*Workspace
 	s := &WorkspaceExceptionStore{
 		path:     opts.Path,
 		root:     opts.WorkspaceRoot,
+		roots:    roots,
 		maxBytes: opts.MaxBytes,
 		logger:   opts.Logger,
 		observe:  opts.ObserveLoad,
@@ -210,6 +224,30 @@ func checkWorkspaceRoot(root string) error {
 		return fmt.Errorf("workspace root %q is not canonical: it resolves to %q", root, resolved)
 	}
 	return nil
+}
+
+// checkPerWorkspaceRoots returns the effective per-workspace roots: root
+// alone when roots is empty. Each is checked like the workspace root, root
+// must be listed, and no root may be inside another (a folder name would then
+// scope two ways).
+func checkPerWorkspaceRoots(root string, roots []string) ([]string, error) {
+	if len(roots) == 0 {
+		return []string{root}, nil
+	}
+	if !slices.Contains(roots, root) {
+		return nil, fmt.Errorf("per-workspace roots %q must include the workspace root %q", roots, root)
+	}
+	for i, r := range roots {
+		if err := checkWorkspaceRoot(r); err != nil {
+			return nil, fmt.Errorf("per-workspace root: %w", err)
+		}
+		for j, other := range roots {
+			if i != j && (r == other || strings.HasPrefix(r, other+"/")) {
+				return nil, fmt.Errorf("per-workspace root %q repeats or is inside %q", r, other)
+			}
+		}
+	}
+	return slices.Clone(roots), nil
 }
 
 // Path is the watched file path.
@@ -239,15 +277,15 @@ func (s *WorkspaceExceptionStore) read() *WorkspaceExceptionSnapshot {
 	body, err := boundedio.ReadFile(s.path, s.maxBytes)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return &WorkspaceExceptionSnapshot{state: WorkspaceExceptionsMissing, root: s.root}
+			return &WorkspaceExceptionSnapshot{state: WorkspaceExceptionsMissing, root: s.root, roots: s.roots}
 		}
-		return &WorkspaceExceptionSnapshot{state: WorkspaceExceptionsInvalid, root: s.root, err: err}
+		return &WorkspaceExceptionSnapshot{state: WorkspaceExceptionsInvalid, root: s.root, roots: s.roots, err: err}
 	}
 	entries, err := parseWorkspaceExceptions(body, s.root)
 	if err != nil {
-		return &WorkspaceExceptionSnapshot{state: WorkspaceExceptionsInvalid, root: s.root, err: err}
+		return &WorkspaceExceptionSnapshot{state: WorkspaceExceptionsInvalid, root: s.root, roots: s.roots, err: err}
 	}
-	return &WorkspaceExceptionSnapshot{state: WorkspaceExceptionsLoaded, root: s.root, entries: entries}
+	return &WorkspaceExceptionSnapshot{state: WorkspaceExceptionsLoaded, root: s.root, roots: s.roots, entries: entries}
 }
 
 func (s *WorkspaceExceptionStore) report(prev, next *WorkspaceExceptionSnapshot) {

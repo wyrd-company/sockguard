@@ -28,11 +28,12 @@ func (r *serveRuntime) loadWorkspaceExceptions(cfg *config.Config, logger *slog.
 		return nil
 	}
 	store, err := filter.NewWorkspaceExceptionStore(filter.WorkspaceExceptionStoreOptions{
-		Path:          cfg.WorkspaceExceptions.File,
-		WorkspaceRoot: cfg.WorkspaceExceptions.WorkspaceRoot,
-		MaxBytes:      config.MaxConfigFileBytes,
-		Logger:        logger,
-		ObserveLoad:   r.metrics.ObserveWorkspaceExceptionsLoad,
+		Path:              cfg.WorkspaceExceptions.File,
+		WorkspaceRoot:     cfg.WorkspaceExceptions.WorkspaceRoot,
+		PerWorkspaceRoots: cfg.WorkspaceExceptions.PerWorkspaceRoots,
+		MaxBytes:          config.MaxConfigFileBytes,
+		Logger:            logger,
+		ObserveLoad:       r.metrics.ObserveWorkspaceExceptionsLoad,
 	})
 	if err != nil {
 		return err

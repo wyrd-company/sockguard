@@ -146,7 +146,7 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 		changed = append(changed, "reload.poll_interval")
 	}
 	// Fork-owned: see the workspace_exceptions entry in ImmutableFields.
-	if oldCfg.WorkspaceExceptions != newCfg.WorkspaceExceptions {
+	if !reflect.DeepEqual(oldCfg.WorkspaceExceptions, newCfg.WorkspaceExceptions) {
 		changed = append(changed, "workspace_exceptions")
 	}
 	return changed
