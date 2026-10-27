@@ -176,6 +176,9 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			}
 		}()
 	}
+	if err := checkBindRootVisibility(cfg, logger); err != nil {
+		return err
+	}
 	warnIfDefaultProfileExcluded(cfg, logger)
 	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
@@ -183,6 +186,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return fmt.Errorf("upstream: %w", err)
 	}
 	if err := runtime.loadWorkspaceExceptions(cfg, logger); err != nil {
+		logger.Error("workspace root validation failed", "error", err)
 		return fmt.Errorf("workspace exceptions: %w", err)
 	}
 	if err := verifyUpstreamReachableForRuntime(cmd.Context(), deps, runtime, cfg, logger); err != nil {

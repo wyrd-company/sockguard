@@ -44,7 +44,7 @@ clients:
     - name: menagerie
       request_body:
         container_create:
-          allowed_bind_mounts: ["/srv/workspaces", "/srv/workspace-sockets", "/srv/compose-staging", "/srv/template-cache"]
+          allowed_bind_mounts: ["/srv/workspaces", "/srv/workspace-sockets", "/srv/compose-staging"]
           apply_workspace_exceptions: true
           require_no_restart_policy: true
 ```
@@ -62,7 +62,15 @@ clients:
 - At start-up the proxy resolves `workspace_root` and every per-workspace root
   in its own mount namespace. If one does not resolve to itself
   (`filepath.EvalSymlinks(root) == root`), start-up fails. Per-workspace
-  roots may not repeat or sit inside one another.
+  roots may not repeat or sit inside one another. Each must be an existing
+  directory; a missing, inaccessible or non-directory root fails startup with
+  its path and the remedy `mount it read-only at the same path`. The same
+  checks run on config reload; an error keeps the running policy generation.
+- In each Docker block with `apply_workspace_exceptions: true`, every
+  `allowed_bind_mounts` entry must exist and be accessible in the proxy's
+  namespace. An entry may be a file. A failure stops startup or rejects a
+  config reload with the same path and remedy. Other Docker blocks and libpod
+  blocks only warn. See [Deployment requirement](/symlink-bind-sources#deployment-requirement).
 - Without `workspace_exceptions.file` the proxy behaves exactly as without
   this feature.
 
@@ -265,8 +273,8 @@ to workspace `/srv/workspaces/alpha`.
 A host path under a per-workspace root `R` must be inside `R/<basename W>`
 (the last element of the workspace key) or, when the exception applies,
 inside one of `W`'s `extraBindSources`. Host paths outside every
-per-workspace root, such as a template cache folder, follow the base
-allowlist as before.
+per-workspace root follow the base allowlist. The template cache is copied
+through the archive API; it is not a bind source or a proxy mount.
 
 - The rule applies to every create in the block, whether or not an entry
   matches and whether or not the file is valid: the roots come from the
