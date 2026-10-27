@@ -1,0 +1,41 @@
+{
+  "producer_commit": "36926e3f8295716a543f90aa6dc7f80f4628d7a2",
+  "producer_path": "backend/internal/throwaway/throwaway.go",
+  "producer_symbol": "writeTar",
+  "producer_file_sha256": "f999ab91860f22de42ae207478cbbc79bb79e7eda9ff30e6851636a6c6a646a3",
+  "producer_function_sha256": "dab95c39d8777ac09cb6e7fea4630ff0aa5d4f7a8b192720379309c54e6fa932",
+  "method": "Exact committed function extracted unchanged into a stdlib-only owned temporary harness; generic files and links; UID10001/GID10002. No proxy or foreign service used.",
+  "relationships": {
+    "references": ["consumer-archive.tar"]
+  },
+  "archive_sha256": "9e6742a6b9108c206d6ad10b2f22c6be29b8fb8a006292bb2ecd6b59a25c0141",
+  "container_target": "/",
+  "source_path": "/tmp/copy-source-3660571264/source",
+  "entries": [
+    {
+      "name": "tmp/copy-source-3660571264/source",
+      "linkname": "",
+      "type": "5"
+    },
+    {
+      "name": "tmp/copy-source-3660571264/source/absolute",
+      "linkname": "/usr/bin/python3",
+      "type": "2"
+    },
+    {
+      "name": "tmp/copy-source-3660571264/source/relative",
+      "linkname": "sub/file",
+      "type": "2"
+    },
+    {
+      "name": "tmp/copy-source-3660571264/source/sub",
+      "linkname": "",
+      "type": "5"
+    },
+    {
+      "name": "tmp/copy-source-3660571264/source/sub/file",
+      "linkname": "",
+      "type": "0"
+    }
+  ]
+}

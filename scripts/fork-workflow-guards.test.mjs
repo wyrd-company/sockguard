@@ -341,6 +341,7 @@ describe("fork-ci workflow", () => {
       "go-lint": "run: ./scripts/ci/go-lint.sh",
       "go-build": 'run: go build -o "$RUNNER_TEMP/sockguard" ./app/cmd/sockguard/',
       "docker-build": "run: docker build --tag sockguard:fork-ci .",
+      acceptance: './tests/acceptance/run.sh 2>&1 | tee "$RUNNER_TEMP/acceptance/output.log"',
       node: "run: npx biome check .",
     };
     for (const [name, command] of Object.entries(gates)) {
@@ -349,6 +350,16 @@ describe("fork-ci workflow", () => {
         `${FILE}: job ${name} no longer runs ${command}`,
       );
     }
+    assert.match(
+      jobs.get("acceptance"),
+      /store: \[containerd, classic\]/u,
+      "fork acceptance must exercise both image stores",
+    );
+    assert.match(
+      jobs.get("acceptance"),
+      /fail-fast: false/u,
+      "one store failure must not hide the other result",
+    );
     assert.ok(
       jobs.get("node").includes("run: npm test"),
       `${FILE}: job node no longer runs npm test`,

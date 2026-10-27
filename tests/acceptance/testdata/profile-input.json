@@ -1,0 +1,27 @@
+{
+  "relationships": {
+    "references": ["candidate.yaml", "profile.md"]
+  },
+  "candidate_sha256": "5a4ef2e9eaaef2c12eced49d999b684af0df87ee52370bef90de0d2199e0df8e",
+  "readme_sha256": "7c18e7f3982555ce3940a0b28e918ba9eaeab9b5d65b7849ec3ad75e63bff1d9",
+  "consumer": "github.com/wyrd-company/devcontainer-builder@v0.2.0",
+  "consumer_commit": "c432d28f97ce18f07f8e032187ab7c211e8a6595",
+  "substitutions": {
+    "/srv/workspaces": "${RUN_ROOT}/workspaces",
+    "/srv/workspace-sockets": "${RUN_ROOT}/workspace-sockets",
+    "/srv/compose-staging": "${RUN_ROOT}/compose-staging",
+    "/etc/sockguard/exceptions": "${RUN_ROOT}/exceptions",
+    "/run/sockguard": "${RUN_ROOT}/listener/${VARIANT}",
+    "registry.example.test": "docker.io",
+    "uids: [10001]": "uids: [${CLIENT_UID}]",
+    "socket_gid: 20001": "socket_gid: ${SOCKET_GID}"
+  },
+  "baseline": "Exact bytes with listed input substitutions only; owner/profile names and all route/security settings retained.",
+  "variants": {
+    "restart-route": "Insert POST /containers/*/restart allow before the final profile deny. Inspector evidence only, never exact baseline behavior.",
+    "strict-root": "Set exec.allow_root_user=false. Baseline deliberately permits root for PatchSystemEnv.",
+    "llb-off": "Set buildkit.llb_bridge.allow_uninspected_passthrough=false.",
+    "restart-route-volume": "Insert POST /containers/*/restart allow before the final profile deny. Inspector evidence only, never exact baseline behavior.",
+    "baseline-observe": "CLI --log-level debug only; no security/routing changes, diagnostic evidence separate from baseline."
+  }
+}
