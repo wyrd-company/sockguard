@@ -295,7 +295,7 @@ All paths are relative to `pkg/host/dockercompose/` unless stated.
 | Method and path | Caller (`file:line`) | Inspected input | Candidate result | Evidence |
 | --- | --- | --- | --- | --- |
 | `GET /networks` | `network.go:59` (`findNetwork`, from `ensureNetworks` in Up); `manage.go:261` (Remove) | `filters={"name":...}` | Needs rule `GET /networks`. Ownership adds the owner label filter | Measured |
-| `POST /networks/create` | `network.go:49` (`ensureNetworks`) | Driver, Internal, Attachable, Labels, Options (`driver_opts`), EnableIPv4/IPv6; network inspector. No IPAM sent | Needs rule. Default inspector denies Attachable, driver options, custom (plugin) drivers, swarm scope, ingress, config-only/from, IPAM config. `bridge`, `host`, `ipvlan`, `macvlan`, `overlay` drivers are built-in and admitted | Measured (default driver); denials pinned by test |
+| `POST /networks/create` | `network.go:49` (`ensureNetworks`) | Driver, Internal, Attachable, Labels, Options (`driver_opts`), EnableIPv4/IPv6; network inspector. No IPAM sent | Needs rule. Default inspector denies Attachable, driver options, custom (plugin) drivers, swarm scope, ingress, config-only/from, IPAM config. `bridge`, `host`, `ipvlan`, `macvlan`, `overlay` drivers are built-in and admitted unless `allowed_drivers` is set | Measured (default driver); denials pinned by test |
 | `DELETE /networks/{id}` | `manage.go:266` (`removeProject`, from `Remove`) | No body | Needs rule only for teardown. Menagerie does not call `Remove` | Measured |
 | `GET /volumes` | `volume.go:50` (`findVolume`); `object_state.go:60` (`objectRecords`, from Up and Remove); `manage.go:270` (Remove) | Name filter, or label filters `devcontainer.compose.objects` + `devcontainer.local_folder=<workspace>` | Needs rule `GET /volumes`. Ownership keeps the label filters and adds the owner label (see below) | Measured |
 | `POST /volumes/create` | `volume.go:35` (`ensureVolumes`); `object_state.go:46` (`publishObjectOwnership`, first config/secret materialization in Up) | Name, Driver, DriverOpts, Labels; volume inspector | Needs rule. Default inspector denies custom drivers and any DriverOpts (including local bind devices) | Measured; bind-device denial pinned by test |
@@ -423,7 +423,10 @@ Add to the single-container candidate:
 - { match: { method: DELETE, path: "/networks/*" },      action: allow }
 ```
 
-Keep the network and volume inspectors at their defaults. Do not grant
+Keep the network and volume inspectors at their defaults, and set
+`request_body.network.allowed_drivers: [bridge]` in the Menagerie profile, so
+that network create and container attachment to an existing `macvlan`,
+`ipvlan`, `host` or `overlay` network are denied. Do not grant
 `/networks/**` or `/volumes/**`: those also admit network connect and
 disconnect, network and volume prune, and volume inspect, which DCB does not
 call. `TestForkEndpointsComposeBroadGrantsWiden` pins that difference.

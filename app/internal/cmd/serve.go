@@ -726,7 +726,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// so there is no body to inspect and only the acknowledgment admits it.
 	policy.ImageLoad.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	policy.ContainerUpdate.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
-	return policy
+	return attachNetworkDriverInspector(cfg, res, policy)
 }
 
 func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, runtime *serveRuntime) http.Handler {

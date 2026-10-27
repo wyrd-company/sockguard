@@ -939,6 +939,11 @@ type NetworkRequestBodyConfig struct {
 	// already attached to it. See filter/libpod_network.go's
 	// inspectLibpodUpdate.
 	AllowDNSServers bool `mapstructure:"allow_dns_servers"`
+	// AllowedDrivers (fork) lists the network drivers a client may create a
+	// network with or attach a container to on the Docker-compat routes.
+	// Empty means no driver check (upstream behavior). Not supported under
+	// libpod_network (a config error). See filter/fork_network_driver.go.
+	AllowedDrivers []string `mapstructure:"allowed_drivers"`
 }
 
 // EndpointConfigRequestBodyConfig configures granular per-field admission for

@@ -183,6 +183,10 @@ type ContainerCreateOptions struct {
 	// AllowEndpointConfig is cross-wired from request_body.network.allow_endpoint_config.
 	// Only consulted when AllowEndpointConfig is false.
 	EndpointConfig EndpointConfigOptions
+	// NetworkDrivers is the fork's allowed_drivers check on the networks a
+	// create attaches to, cross-wired from request_body.network.
+	// See fork_network_driver.go.
+	NetworkDrivers NetworkDriverOptions
 }
 
 type containerCreatePolicy struct {
@@ -229,6 +233,7 @@ type containerCreatePolicy struct {
 
 	allowEndpointConfig bool
 	endpointConfig      EndpointConfigOptions
+	networkDrivers      networkDriverPolicy
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -324,6 +329,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
 		endpointConfig:                    opts.EndpointConfig,
+		networkDrivers:                    newNetworkDriverPolicy(opts.NetworkDrivers),
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
@@ -1353,6 +1359,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 	if denyReason := p.denyRequiredLabelsReason(*createReq); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.networkDrivers.denyContainerCreateDriverReason(r.Context(), body); denyReason != "" {
 		return denyReason, nil
 	}
 

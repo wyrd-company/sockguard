@@ -1758,6 +1758,7 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
 	errs = append(errs, validateLibpodPodCreateConfig(prefix, cfg.LibpodPodCreate)...)
 	errs = append(errs, validateBuildkitConfig(prefix, cfg.Buildkit)...)
+	errs = append(errs, validateNetworkAllowedDrivers(prefix, cfg)...)
 	return errs
 }
 
