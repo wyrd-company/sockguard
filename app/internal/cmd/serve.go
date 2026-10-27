@@ -691,7 +691,7 @@ func buildServeClientProfiles(cfg *config.Config, res *upstream.Resolver) (map[s
 		return nil, err
 	}
 	for name, profile := range clientProfiles {
-		profile.PolicyConfig = attachRuntimeInspectors(cfg, res, profile.PolicyConfig)
+		profile.PolicyConfig = attachRuntimeInspectors(cfg, res, withGlobalDenyVerbosity(cfg, profile.PolicyConfig))
 		clientProfiles[name] = profile
 	}
 	return clientProfiles, nil

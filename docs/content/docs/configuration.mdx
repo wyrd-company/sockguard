@@ -1727,7 +1727,7 @@ multiple entries via the env var; e.g.
 | `SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES`     | `ownership.allow_unowned_images`          | `true`                 | Allow operations on images that lack the ownership label.                              |
 | `SOCKGUARD_OWNERSHIP_ALLOW_CROSS_OWNER_NAMESPACE_SHARING` | `ownership.allow_cross_owner_namespace_sharing` | `false`     | Allow `container:<ref>` namespace-sharing targets owned by a different owner (default denies them). |
 
-`response.deny_verbosity` controls how much metadata Sockguard includes in its own `403` JSON deny responses:
+`response.deny_verbosity` controls how much metadata Sockguard includes in its own `403` JSON deny responses, for the default policy and every client profile:
 
 - `minimal` (default): returns only the generic `message`. Never echoes the request method, path, or matched rule reason.
 - `verbose`: returns `message`, `method`, `path` (with `/secrets/*` and `/swarm/unlockkey` paths redacted), and `reason`. Intended for rule authoring and dev work only — never a production default because it can leak request details to denied callers.
