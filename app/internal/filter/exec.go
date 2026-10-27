@@ -35,10 +35,13 @@ var (
 // nothing for a start-time Env re-check to catch that create-time didn't
 // already see.
 type ExecInspectResult struct {
-	Command    []string
-	Privileged bool
-	User       string
-	Env        []string
+	// ContainerID is the immutable target of an exec instance. Workspace
+	// policies inspect this container before admitting exec start.
+	ContainerID string
+	Command     []string
+	Privileged  bool
+	User        string
+	Env         []string
 }
 
 // ExecInspectFunc looks up an existing exec instance by id.
@@ -152,6 +155,7 @@ type execCreateRequest struct {
 }
 
 type execInspectResponse struct {
+	ContainerID   string `json:"ContainerID"`
 	ProcessConfig struct {
 		Entrypoint string   `json:"entrypoint"`
 		Arguments  []string `json:"arguments"`
@@ -542,9 +546,10 @@ func newHTTPExecInspector(rt http.RoundTripper, urlPrefix string) ExecInspectFun
 		command = append(command, decoded.ProcessConfig.Arguments...)
 
 		return ExecInspectResult{
-			Command:    command,
-			Privileged: decoded.ProcessConfig.Privileged,
-			User:       decoded.ProcessConfig.User,
+			ContainerID: decoded.ContainerID,
+			Command:     command,
+			Privileged:  decoded.ProcessConfig.Privileged,
+			User:        decoded.ProcessConfig.User,
 		}, true, nil
 	}
 }
