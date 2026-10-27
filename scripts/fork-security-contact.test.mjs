@@ -38,6 +38,14 @@ describe("fork security contact", () => {
     assert.equal(entry[1], ADVISORY_URL);
   });
 
+  it("SECURITY.md: makes no upstream response-time promise and no cosign request", () => {
+    // The fork publishes no cosign signatures, and its response times are its
+    // own; upstream's wording for either must not come back with a rebase.
+    const text = read("SECURITY.md");
+    assert.doesNotMatch(text, /You can expect|within \d+ (?:hours|days)/u);
+    assert.doesNotMatch(text, /cosign/iu);
+  });
+
   it("SECURITY.md: the in-scope image is the fork's image", () => {
     const text = read("SECURITY.md");
     assert.match(text, /`ghcr\.io\/wyrd-company\/sockguard:<tag>`/u);
