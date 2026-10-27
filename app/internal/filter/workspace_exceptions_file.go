@@ -286,7 +286,7 @@ func parseWorkspaceExceptions(body []byte, root string) (map[string]*workspaceEx
 	if err := RejectDuplicateCaseVariantJSONKeys(body); err != nil {
 		return nil, err
 	}
-	top, err := strictJSONObject(body, "document", []string{"version", "exceptions"}, []string{"version", "exceptions"})
+	top, err := strictJSONObject(body, "document", workspaceTopFields, workspaceTopFields)
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +316,7 @@ func parseWorkspaceExceptions(body []byte, root string) (map[string]*workspaceEx
 }
 
 func parseWorkspaceExceptionEntry(raw json.RawMessage, root, at string) (*workspaceExceptionEntry, error) {
-	fields, err := strictJSONObject(raw, at, []string{"workspace", "grants", "approval"}, []string{"workspace", "grants", "approval"})
+	fields, err := strictJSONObject(raw, at, workspaceEntryFields, workspaceEntryFields)
 	if err != nil {
 		return nil, err
 	}
@@ -347,6 +347,20 @@ func checkWorkspaceKey(workspace, root string) error {
 	}
 	return nil
 }
+
+// Field names of each object in the file. Required lists are subsets.
+var (
+	workspaceTopFields              = []string{"version", "exceptions"}
+	workspaceEntryFields            = []string{"workspace", "grants", "approval"}
+	workspaceApprovalFields         = []string{"by", "at", "note"}
+	workspaceApprovalRequiredFields = []string{"by", "at"}
+	workspaceApprovalByFields       = []string{"issuer", "subject", "name"}
+	workspaceApprovalByRequired     = []string{"issuer", "subject"}
+)
+
+// workspaceSecurityOptValues is the closed set of fixed securityOpt grants;
+// apparmor=<profile> is the one pattern beside them.
+var workspaceSecurityOptValues = []string{"seccomp=unconfined", "apparmor=unconfined", "label=disable", "systempaths=unconfined"}
 
 var workspaceGrantFields = []string{
 	"privileged", "capAdd", "namespaces", "devices", "deviceCgroupRules", "gpus",
@@ -522,11 +536,11 @@ func (g *workspaceGrants) addRestartPolicy(value, at string) error {
 
 func parseWorkspaceApproval(raw json.RawMessage, at string) (WorkspaceApproval, error) {
 	var a WorkspaceApproval
-	fields, err := strictJSONObject(raw, at, []string{"by", "at", "note"}, []string{"by", "at"})
+	fields, err := strictJSONObject(raw, at, workspaceApprovalFields, workspaceApprovalRequiredFields)
 	if err != nil {
 		return a, err
 	}
-	by, err := strictJSONObject(fields["by"], at+".by", []string{"issuer", "subject", "name"}, []string{"issuer", "subject"})
+	by, err := strictJSONObject(fields["by"], at+".by", workspaceApprovalByFields, workspaceApprovalByRequired)
 	if err != nil {
 		return a, err
 	}
