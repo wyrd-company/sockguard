@@ -33,7 +33,12 @@ func TestForkFieldRestartGrantNames(t *testing.T) {
 					if name != "" && name != "no" && (grant != "same" || name != "on-failure") {
 						want, reason = 403, "restart policy"
 					}
-					h.postCreate(t, h.create(map[string]any{"RestartPolicy": map[string]any{"Name": name, "MaximumRetryCount": 3}}), want, reason)
+					body := h.create(map[string]any{"RestartPolicy": map[string]any{"Name": name, "MaximumRetryCount": 3}})
+					h.postCreate(t, body, want, reason)
+					if name == "" || name == "no" {
+						delete(body, "Labels")
+						h.postCreate(t, body, 201, "") // unlabeled BASE restart policy
+					}
 				})
 			}
 		})
@@ -52,7 +57,10 @@ func TestForkFieldWorkspaceIdentityAndGrantMatch(t *testing.T) {
 		want   int
 		reason string
 	}{
-		{"header_only", func(b map[string]any, hdr http.Header) {}, 201, ""},
+		{"header_only_base", func(b map[string]any, hdr http.Header) {
+			delete(b, "Labels")
+			b["HostConfig"].(map[string]any)["Privileged"] = false
+		}, 201, ""},
 		{"same_label", func(b map[string]any, hdr http.Header) {
 			b["Labels"] = map[string]string{filter.WorkspaceLocalFolderLabel: h.f.alpha}
 		}, 201, ""},
@@ -64,6 +72,7 @@ func TestForkFieldWorkspaceIdentityAndGrantMatch(t *testing.T) {
 		{"repeated_header", func(b map[string]any, hdr http.Header) { hdr.Add(filter.WorkspaceHeader, h.f.alpha) }, 403, "more than one workspace"},
 		{"empty_header", func(b map[string]any, hdr http.Header) { hdr.Set(filter.WorkspaceHeader, "") }, 403, "valid workspace"},
 		{"noncanonical_header", func(b map[string]any, hdr http.Header) {
+			delete(b, "Labels")
 			b["HostConfig"].(map[string]any)["Privileged"] = false
 			hdr.Set(filter.WorkspaceHeader, h.f.alpha+"/.")
 		}, 403, "valid workspace"},
@@ -81,6 +90,7 @@ func TestForkFieldWorkspaceIdentityAndGrantMatch(t *testing.T) {
 			b["HostConfig"].(map[string]any)["Binds"] = []string{h.f.alpha + ":/workspace", h.outside + ":/external"}
 		}, 403, "privileged containers are not allowed"},
 		{"throwaway_never_grants", func(b map[string]any, hdr http.Header) {
+			b["Labels"] = map[string]string{filter.WorkspaceThrowawayLabel: h.f.alpha}
 			hdr.Del(filter.WorkspaceHeader)
 			hdr.Set(filter.WorkspaceThrowawayHeader, h.f.alpha)
 		}, 403, "privileged containers are not allowed"},

@@ -49,8 +49,15 @@ func TestForkFieldComposePrimaryAndSidecar(t *testing.T) {
 			if primary {
 				h.postCreate(t, b, 201, "")
 			} else {
+				// Isolate the workspace-mount guard with an eligible label.
+				labels[filter.WorkspaceLocalFolderLabel] = h.f.alpha
 				h.postCreate(t, b, 403, "privileged containers are not allowed") // no workspace mount, no extras
+				delete(labels, filter.WorkspaceLocalFolderLabel)
 				hc["Binds"] = []string{"sample_data:/data:rw", h.f.alpha + ":/workspace:ro"}
+				hc["Privileged"] = false
+				h.postCreate(t, b, 201, "") // unlabeled sidecar with own-W bind: BASE only
+				labels[filter.WorkspaceLocalFolderLabel] = h.f.alpha
+				hc["Privileged"] = true
 				h.postCreate(t, b, 201, "")
 			}
 			// A label claim cannot override the workspace header.
