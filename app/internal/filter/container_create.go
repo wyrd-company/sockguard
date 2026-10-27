@@ -187,6 +187,13 @@ type ContainerCreateOptions struct {
 	// create attaches to, cross-wired from request_body.network.
 	// See fork_network_driver.go.
 	NetworkDrivers NetworkDriverOptions
+
+	// Fork-owned (wyrd-company/sockguard); see container_create_workspace.go.
+	ApplyWorkspaceExceptions bool
+	RequireNoRestartPolicy   bool
+	// WorkspaceExceptions is the runtime exceptions store, attached by the
+	// serve command; nil when workspace_exceptions.file is unset.
+	WorkspaceExceptions *WorkspaceExceptionStore
 }
 
 type containerCreatePolicy struct {
@@ -234,6 +241,10 @@ type containerCreatePolicy struct {
 	allowEndpointConfig bool
 	endpointConfig      EndpointConfigOptions
 	networkDrivers      networkDriverPolicy
+
+	applyWorkspaceExceptions bool
+	requireNoRestartPolicy   bool
+	workspaceExceptions      *WorkspaceExceptionStore
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -330,6 +341,9 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowEndpointConfig:               opts.AllowEndpointConfig,
 		endpointConfig:                    opts.EndpointConfig,
 		networkDrivers:                    newNetworkDriverPolicy(opts.NetworkDrivers),
+		applyWorkspaceExceptions:          opts.ApplyWorkspaceExceptions,
+		requireNoRestartPolicy:            opts.RequireNoRestartPolicy,
+		workspaceExceptions:               opts.WorkspaceExceptions,
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so

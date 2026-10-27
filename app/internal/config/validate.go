@@ -97,6 +97,7 @@ func validateBasic(cfg *Config, mode validateMode) []string {
 	}
 	errs = append(errs, validateReload(cfg)...)
 	errs = append(errs, validatePolicyBundle(cfg)...)
+	errs = append(errs, validateWorkspaceExceptions(cfg)...)
 	errs = append(errs, validateRequestBody(cfg)...)
 	errs = append(errs, validateMutationsConfig(cfg)...)
 	errs = append(errs, validateRules(cfg)...)
