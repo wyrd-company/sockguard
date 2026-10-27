@@ -711,6 +711,9 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// path above, even though both are checked against the SAME execPolicy
 	// (#148 design doc decision C3) — see ExecOptions.InspectStartLibpod.
 	policy.Exec.InspectStartLibpod = filter.NewLibpodExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
+	// Fork-owned: container start and restart re-check their bind sources
+	// through the same resolver (filter/fork_start_recheck.go).
+	policy.ForkStartRecheck.InspectContainer = filter.NewForkStartRecheckInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
 	// insecure_allow_body_blind_writes is a global, not-per-profile setting
 	// (validateBodyBlindWriteRulesForPolicy in rules.go says as much), so it
 	// is wired here rather than through RequestBodyConfig.ToFilterOptions —

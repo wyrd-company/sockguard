@@ -1,6 +1,6 @@
 ---
 title: Symlink bind sources
-description: Fork-only. How the wyrd-company fork resolves symlinks in bind sources before the allowed_bind_mounts check, what the proxy must see for that to work, and the gap that remains between the check and the mount.
+description: Fork-only. How the wyrd-company fork resolves symlinks in bind sources before the allowed_bind_mounts check, checks them again at container start and restart, what the proxy must see for that to work, and the gaps that remain.
 ---
 
 This page describes a change that exists only in the
@@ -20,6 +20,7 @@ and resolves outside every entry is denied.
 | `POST /containers/create` | `HostConfig.Binds` sources, `HostConfig.Mounts` entries of type `bind`, `Config.Volumes` keys that Podman reads as binds, `upperdir`/`workdir` overlay options in a `Binds` entry, and the bind device and overlay directories of a `local` volume in `Mounts[].VolumeOptions.DriverConfig` |
 | `POST /libpod/containers/create` | `mounts[]` bind sources, `rootfs`, `overlay_volumes[].source`, `upperdir`/`workdir` options on `overlay_volumes` and `volumes`, `init_path` |
 | `POST /volumes/create`, `POST /libpod/volumes/create` | the bind device and overlay directories of a `local` volume |
+| `POST /containers/{id}/start`, `POST /containers/{id}/restart` and the libpod equivalents | the bind sources the daemon reports for the container; see [Re-check at start and restart](#re-check-at-start-and-restart) |
 
 These keep the string check only:
 
@@ -92,20 +93,18 @@ logged. The proxy image runs as UID 65532 with no capabilities, so every
 directory on the way to a source needs search (`x`) permission for that user.
 Without it the request is denied with `permission denied`.
 
-## Residual gap: check at create, mount at start
+## Gap between create and start
 
-The check runs when the container is created. The daemon resolves the source
-again at every start, follows symlinks, and keeps the unresolved path in
-`docker inspect`. This was tested on dockerd 29.9.2: a container was created
-with a real directory as its source, the directory was replaced with a symlink
-to a directory outside it, and `docker start` mounted the outside directory.
-After the symlink was replaced with the real directory again, the next start
-mounted the original directory.
+The daemon resolves the source again at every start, follows symlinks, and
+keeps the unresolved path in `docker inspect`. This was tested on dockerd
+29.9.2: a container was created with a real directory as its source, the
+directory was replaced with a symlink to a directory outside it, and
+`docker start` mounted the outside directory. After the symlink was replaced
+with the real directory again, the next start mounted the original directory.
 
-A real directory that is replaced with a symlink after create therefore passes.
-This also applies to every later start and to every restart the daemon does
-by itself under a restart policy. To replace a component, a process needs
-write access to its parent directory:
+A check at create alone therefore passes a real directory that is replaced
+with a symlink after create. To replace a component, a process needs write
+access to its parent directory:
 
 - A client with write access to the whole allowlisted root can replace any
   path under it, at any time.
@@ -115,18 +114,74 @@ write access to its parent directory:
 
 The check at create stops a symlink that already exists when the container is
 created: a planted link, or a mount in a configuration file that names a link.
+The re-check below covers a replacement between create and a start or restart
+that passes through the proxy.
 
-**Handling.** This page covers the check at create. A re-check of the bind
-sources at container start and restart is delivered separately. Subpath bind
-sources under an allowlist entry stay allowed. With both checks in place, these
-gaps remain:
+## Re-check at start and restart
+
+Before the proxy forwards a start or a restart, it reads the container from
+the daemon with `GET /containers/{id}/json` and applies the create check
+again to each bind source the daemon reports. The routes are:
+
+- `POST /containers/{id}/start` and `POST /containers/{id}/restart`, with and
+  without an API version prefix
+- `POST /libpod/containers/{name}/start` and
+  `POST /libpod/containers/{name}/restart`, with and without a version prefix
+
+The inspect goes through the same upstream connection as the proxied request,
+with its existing timeouts. Podman serves the same inspect route, so libpod
+starts are read the same way.
+
+The sources are the `Mounts` entries of type `bind`, the sources of
+`HostConfig.Binds`, and the `HostConfig.Mounts` entries of type `bind`. A
+`Binds` or `Mounts` source is checked as written as well as cleaned, as at
+create.
+
+The allowlists are the active policy's
+`request_body.container_create.allowed_bind_mounts` and
+`request_body.libpod_container_create.allowed_bind_mounts`. Both apply to both
+route families, because the daemon mounts the same source whichever route
+created the container. A source is checked under each allowlist that admits
+it as written, and passes when one of them also admits it after resolution.
+
+The re-check narrows nothing that create allowed:
+
+- A source that no allowlist admits as written passes. Such a container was
+  not created under this policy, for example by another client or before the
+  allowlist changed.
+- When neither allowlist is set, or either one holds `/`, no source can fail
+  the re-check, so the proxy does not read the container at all.
+- A source that is unchanged since create resolves as it did at create.
+
+Each failure has its own reason and reason code. `<action>` is
+`container start`, `container restart`, `libpod container start` or
+`libpod container restart`.
+
+| Reason code | Reason | Cause |
+| --- | --- | --- |
+| `container_start_bind_source_denied` | `<action> denied: bind mount source ...`, then the create reasons above | a source fails the create check now |
+| `container_start_inspect_failed` | `<action> denied: container "<id>" could not be inspected to re-check its bind sources` | the inspect failed: a transport error, a status other than 200 (a missing container included), a body that cannot be decoded or one larger than 8 MiB |
+
+An inspect failure fails closed. Its cause is logged at warning level.
+
+## Gaps that remain
 
 - **The start race.** A writer that runs at the same time can replace a
-  component in the few milliseconds between the proxy's check at start and the
+  component in the few milliseconds between the proxy's re-check and the
   daemon's mount.
-- **Restarts the daemon does by itself.** A restart under a restart policy does
-  not pass through the proxy. A restart-policy setting controls whether a
-  create request may set one.
-- **A compromised client that can write the whole allowlisted root.** It can
-  replace any component under the root at any time, so neither check binds it.
-  In a Menagerie deployment, this client is Menagerie itself.
+- **Starts that do not pass through the proxy.** A restart the daemon does by
+  itself under a restart policy, and the starts after a daemon or host reboot,
+  are not checked. A restart-policy setting controls whether a create request
+  may set one.
+- **A compromised client that can write every component below the
+  allowlisted root.** It can replace any component under the root at any
+  time, so neither check binds it. In a Menagerie deployment, this client is
+  Menagerie itself.
+- **Podman routes that start or prepare a container another way.**
+  `POST /libpod/containers/{name}/init`, `POST /libpod/pods/{name}/start`,
+  `POST /libpod/pods/{name}/restart`, `POST /libpod/containers/{name}/restore`
+  and kube play are not re-checked.
+- **Sources the create check covers that the inspect does not report as
+  binds.** The bind device and overlay directories of a `local` volume, and the
+  libpod `rootfs`, `overlay_volumes`, overlay `upperdir`/`workdir` options and
+  `init_path`, are checked at create only.
