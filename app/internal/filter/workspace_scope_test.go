@@ -405,3 +405,38 @@ func TestPerWorkspaceRootsChecked(t *testing.T) {
 		t.Fatalf("default roots %v, want the workspace root", got)
 	}
 }
+
+// extraBindSources are a grant: scoping honors them only when the exception
+// applies (the devcontainer header, an entry for W and a passing match).
+func TestWorkspaceScopeExtrasOnlyWhenTheExceptionApplies(t *testing.T) {
+	h, sockets := newScopeHarness(t, nil)
+	shared := filepath.Join(sockets, "beta", "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAtomic(t, h.f.file, mustJSON(t, workspaceDoc(workspaceEntryDoc(h.f.alpha, map[string]any{"extraBindSources": []string{shared}}))))
+	h.store.Reload()
+	opts := h.scopeOptions(sockets, nil)
+	alpha := map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}
+	// Control: the match passes and the extra is usable.
+	h.admit(opts, scopedRequest(alpha, h.f.alpha+":/w", shared+":/shared"))
+	// A bind outside W and its extras breaks agreement: no exception, so
+	// the extra under a root is out of scope.
+	h.deny(opts, scopedRequest(alpha, h.f.alpha+":/w", shared+":/shared", h.f.outside+":/data"), "outside this workspace's folder")
+	// No workspace mount: no exception, no extra.
+	h.deny(opts, scopedRequest(alpha, shared+":/shared"), "outside this workspace's folder")
+}
+
+// The roots come from the configuration: an invalid file removes the grants
+// and leaves the scoping in force.
+func TestWorkspaceScopeHoldsWithAnInvalidFile(t *testing.T) {
+	h, sockets := newScopeHarness(t, nil)
+	writeAtomic(t, h.f.file, []byte(`{"version":1,"exceptions":[],"extra":true}`))
+	if h.store.Reload().State() != WorkspaceExceptionsInvalid {
+		t.Fatal("fixture: file should be invalid")
+	}
+	opts := h.scopeOptions(sockets, nil)
+	alpha := map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}
+	h.admit(opts, scopedRequest(alpha, h.f.alpha+":/w", filepath.Join(sockets, "alpha")+":/run/s"))
+	h.deny(opts, scopedRequest(alpha, h.f.alpha+":/w", h.f.beta+":/other"), "outside this workspace's folder")
+}
