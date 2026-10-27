@@ -132,6 +132,10 @@ refactor(proxy): simplify middleware chain
 - **Fuzz tests** for filter/config parsing
 - Coverage floor: 96%+ of production code (enforced by the CI coverage gate in `ci-verify.yml`; test harnesses/helpers excluded; ratchet up as coverage climbs)
 
+### Fork real-daemon acceptance
+
+Run `make acceptance` from the repository root with Docker available. The target builds the exact fork image and drives the pinned consumer in an owned dind fixture. `ACCEPTANCE_STORE=classic make acceptance` selects the classic image store; the default is containerd. The tests use the `sockguardacceptance` build tag in a separate module, so ordinary Go tests need no daemon. See [the acceptance guide](tests/acceptance/README.md) for inputs, controls, logs and cleanup.
+
 ### TypeScript
 
 - Website/docs use framework-provided testing where applicable

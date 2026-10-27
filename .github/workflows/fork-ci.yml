@@ -109,6 +109,46 @@ jobs:
       - name: Build image (no push)
         run: docker build --tag sockguard:fork-ci .
 
+  acceptance:
+    name: "Real Docker Acceptance (${{ matrix.store }})"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [containerd, classic]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # The owned dind daemon gives every scratch path the same real spelling
+      # in the runner, daemon and proxy mount namespaces. No shared daemon
+      # configuration changes, registry login, release or publish occurs.
+      - name: Real daemon acceptance
+        env:
+          ACCEPTANCE_STORE: ${{ matrix.store }}
+          ACCEPTANCE_EVIDENCE_ROOT: ${{ runner.temp }}/acceptance
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/acceptance"
+          ./tests/acceptance/run.sh 2>&1 | tee "$RUNNER_TEMP/acceptance/output.log"
+
+      - name: Retain acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: acceptance-${{ matrix.store }}
+          path: ${{ runner.temp }}/acceptance
+          if-no-files-found: error
+
   node:
     name: "Biome and Script Tests"
     runs-on: ubuntu-24.04
