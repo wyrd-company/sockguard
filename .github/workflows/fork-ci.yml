@@ -8,9 +8,9 @@ name: "Fork CI"
 
 on:
   push:
-    branches: [main, 'epic/*']
+    branches: [main, wyrd, 'epic/*']
   pull_request:
-    branches: [main, 'epic/*']
+    branches: [main, wyrd, 'epic/*']
 
 concurrency:
   group: fork-ci-${{ github.ref }}
