@@ -58,7 +58,7 @@ func (l *statusFirstLeg) RoundTrip(r *http.Request) (*http.Response, error) {
 		l.frame = frame
 		l.reads.Add(1)
 	}
-	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(frame))}, nil
+	return &http.Response{StatusCode: 200, Header: http.Header{"Grpc-Status": []string{"0"}}, Body: io.NopCloser(bytes.NewReader(frame))}, nil
 }
 
 func statusFirstBridge(t *testing.T) (*bridge, *statusFirstLeg) {
