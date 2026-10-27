@@ -220,9 +220,7 @@ func TestServeChainAppliesWorkspaceExceptions(t *testing.T) {
 			for _, path := range []string{"/v1.51/containers/create", "/v1.51/containers/sample/start"} {
 				rec := httptest.NewRecorder()
 				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(f.createBody(f.alpha))))
-				// Deny verbosity is a global setting, so only the default
-				// block's response carries the reason.
-				if rec.Code != http.StatusForbidden || (name == "default block" && !strings.Contains(rec.Body.String(), "the request names no workspace")) {
+				if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "the request names no workspace") {
 					t.Fatalf("%s without a workspace header: status %d body %s, want the workspace denial", path, rec.Code, rec.Body.String())
 				}
 			}
