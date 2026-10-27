@@ -355,9 +355,13 @@ reloader, and runs whether or not `reload.enabled` is set.
 
 - Each load reads the file, decodes and validates it, and swaps in a new
   snapshot as one step.
-- A create takes the snapshot once, before it reads its body, and uses it for
-  matching and grants. A create in flight during a replace keeps the old
-  snapshot; a new create uses the new one.
+- A create takes one snapshot at its selected policy's inspection admission,
+  before any body reader, including configured admission mutation. Matching
+  and grants use that snapshot after mutation; mutation still runs before
+  create validation. A create in flight during a replace keeps the admitted
+  snapshot; a new create uses the replacement. An admitted missing or invalid
+  file stays missing or invalid for that request. Snapshots belong to each
+  request and its selected policy, including named client profiles.
 - A missing file means no exceptions. This is normal before the first entry
   and is logged when the file goes missing, not on every reload. On a
   filesystem that delivers inotify events, removing the file takes effect

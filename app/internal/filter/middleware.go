@@ -179,9 +179,10 @@ func (o Options) normalized() Options {
 }
 
 type runtimePolicy struct {
-	rules                   []*CompiledRule
-	denyResponseVerbosity   DenyResponseVerbosity
-	inspectPoliciesByMethod map[string][]requestInspectPolicy
+	rules                    []*CompiledRule
+	denyResponseVerbosity    DenyResponseVerbosity
+	inspectPoliciesByMethod  map[string][]requestInspectPolicy
+	captureWorkspaceSnapshot func(*http.Request, string)
 }
 
 type inspectSeverity int
@@ -424,6 +425,7 @@ func runAllowedInspection(activePolicy runtimePolicy, logger *slog.Logger, w htt
 
 func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *mutationEngine) runtimePolicy {
 	cfg = cfg.normalized()
+	containerCreate := newContainerCreatePolicy(cfg.ContainerCreate)
 	all := []requestInspectPolicy{
 		// The two admission-mutation entries are registered BEFORE
 		// container_create/service in this same slice, at the same
@@ -435,7 +437,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// second, in the same request, against whatever bytes mutation left
 		// in r.Body. Neither entry needs to know the other exists.
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreateMutationPolicy(mutationEng).inspect, "failed to apply container create admission mutations", "unable to apply container create admission mutations"},
-		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspectWithWorkspaceExceptions, "failed to inspect container create request body", "unable to inspect container create request body"},
+		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, containerCreate.inspectWithWorkspaceExceptions, "failed to inspect container create request body", "unable to inspect container create request body"},
 		// libpod container-create is path-exclusive with the Docker-compat
 		// entry above (isLibpodContainerCreatePath vs
 		// matchesContainerCreateInspection never both match the same
@@ -520,10 +522,15 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesForkStartRecheckInspection, inspectSeverityCritical, newForkStartRecheckPolicy(cfg).inspect, "failed to re-check container start bind sources", "unable to re-check container start bind sources"},
 	}
 	byMethod := groupInspectPoliciesByMethod(all)
+	var captureWorkspaceSnapshot func(*http.Request, string)
+	if cfg.ContainerCreate.ApplyWorkspaceExceptions {
+		captureWorkspaceSnapshot = containerCreate.captureWorkspaceSnapshot
+	}
 	return runtimePolicy{
-		rules:                   rules,
-		denyResponseVerbosity:   cfg.DenyResponseVerbosity,
-		inspectPoliciesByMethod: byMethod,
+		rules:                    rules,
+		denyResponseVerbosity:    cfg.DenyResponseVerbosity,
+		inspectPoliciesByMethod:  byMethod,
+		captureWorkspaceSnapshot: captureWorkspaceSnapshot,
 	}
 }
 
@@ -705,6 +712,11 @@ func groupInspectPoliciesByMethod(all []requestInspectPolicy) map[string][]reque
 type inspectBuckets [3][inspectBucketCapacity]*requestInspectPolicy
 
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
+	// Fork-owned: admission precedes every supported body reader in this
+	// policy, while mutation still runs before container validation.
+	if p.captureWorkspaceSnapshot != nil {
+		p.captureWorkspaceSnapshot(r, normalizedPath)
+	}
 	var buckets inspectBuckets
 	var counts [3]int
 

@@ -46,6 +46,8 @@ and exec start also require a valid workspace header. The target container is
 inspected and must carry the same-kind workspace label equal to the header's
 workspace. Unlabeled, mismatched and opposite-kind targets are denied. See
 [Workspace identity](content/docs/workspace-exceptions.mdx#workspace-identity).
+An opted-in create captures its exceptions snapshot before admission mutation
+reads the body. Mutation still runs before create validation.
 
 This is a source audit, a set of local policy tests and one local Compose run.
 It is not a successful build through a deployed Menagerie policy. The rule sets
