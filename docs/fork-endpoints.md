@@ -4,6 +4,7 @@ relationships:
     - ../app/internal/buildkitproxy/registry.go
     - ../app/internal/buildkitproxy/solve.go
     - ../app/internal/ownership/middleware.go
+    - ../app/internal/ownership/fork_label_filter.go
     - ../app/internal/filter/fork_endpoints_policy_test.go
     - ../app/internal/filter/fork_endpoints_compose_test.go
     - ../app/internal/ownership/fork_endpoints_compose_test.go
@@ -23,22 +24,20 @@ explicit body settings. Compose bring-up, stop and teardown work through narrow
 network and volume rules. A real Compose project was driven through a local
 Sockguard build with those rules.
 
-Three results limit that:
+Two results limit that:
 
 - **The devcontainer build does not work through Sockguard's mediated BuildKit
   connection at this base.** It needs LLBBridge, which is denied on both
   tunnels. The builder SDK's legacy exporter fields are a second, independent
   incompatibility. Adding HTTP rules cannot fix either. The build-path decision
   below addresses both.
-- **With ownership enabled, every devcontainer-builder container lookup
-  matches the wrong containers.** Ownership replaces the client's `label`
-  list filters with the owner label. devcontainer-builder finds a workspace's
-  containers only by those filters and does not check the labels of the
-  result. A measured Compose `Up` through an ownership-enabled proxy stopped and
-  removed the primary container in place of a sidecar. See
-  [Ownership and label lookups](#ownership-and-label-lookups).
 - **Default mount-path redaction hides the object roots Compose tracks.**
   See [Compose inventory](#compose-inventory).
+
+With ownership enabled, devcontainer-builder's label lookups reach the daemon
+with the owner label ANDed in, so a lookup returns only the requested
+workspace's owned containers. See
+[Ownership and label lookups](#ownership-and-label-lookups).
 
 This is a source audit, a set of local policy tests and one local Compose run.
 It is not a successful build through a deployed Menagerie policy. The rule sets
@@ -82,7 +81,7 @@ acceptance tests supply that evidence.
 | --- | --- | --- | --- |
 | `HEAD /_ping`, fallback `GET /_ping` | SDK version negotiation; `pkg/buildkit/connect.go:57`, caller-supplied Docker client for host operations; SDK `client/ping.go` | No body; negotiation reads API headers | Needs both rules for SDK negotiation and fallback |
 | `GET /info` | `internal/dockerimage/image.go:83` (image not local and no platform given), `pkg/host/gpu/availability.go:35` (`hostRequirements.gpu` with detect mode) | No body; reads OS, architecture and runtimes | Conditional; needs rule when either branch runs. Response redaction applies |
-| `GET /containers/json` | `pkg/host/docker/spawn.go:90` (`findLabeled`), used by up, inspect, stop and remove | `all=1`, label filters | Needs rule; ownership drops the label filters (see below) |
+| `GET /containers/json` | `pkg/host/docker/spawn.go:90` (`findLabeled`), used by up, inspect, stop and remove | `all=1`, label filters | Needs rule; ownership keeps the label filters and adds the owner label (see below) |
 | `GET /containers/{id}/json` | `pkg/host/docker/up.go:161,230,263`, `manage.go:42` | No body | Needs rule; discovers mount, user, environment and state data |
 | `GET /images/{name}/json` | `pkg/host/docker/image.go:18`, `up.go:193,363`, `pkg/builder/metadata.go:79`, `internal/dockerimage/image.go:73,109` | No body; inspect path must allow slash-bearing names | Needs rule; `GET /images/**/json` covers registry/repository names |
 | `POST /images/create` | `internal/dockerimage/image.go:34`, called by host image ensure and builder metadata resolution | `fromImage`, `tag`, `X-Registry-Auth`; image-pull inspector | Needs rule and approved registry allowlist; no import grant needed |
@@ -298,10 +297,10 @@ All paths are relative to `pkg/host/dockercompose/` unless stated.
 | `GET /networks` | `network.go:59` (`findNetwork`, from `ensureNetworks` in Up); `manage.go:261` (Remove) | `filters={"name":...}` | Needs rule `GET /networks`. Ownership adds the owner label filter | Measured |
 | `POST /networks/create` | `network.go:49` (`ensureNetworks`) | Driver, Internal, Attachable, Labels, Options (`driver_opts`), EnableIPv4/IPv6; network inspector. No IPAM sent | Needs rule. Default inspector denies Attachable, driver options, custom (plugin) drivers, swarm scope, ingress, config-only/from, IPAM config. `bridge`, `host`, `ipvlan`, `macvlan`, `overlay` drivers are built-in and admitted | Measured (default driver); denials pinned by test |
 | `DELETE /networks/{id}` | `manage.go:266` (`removeProject`, from `Remove`) | No body | Needs rule only for teardown. Menagerie does not call `Remove` | Measured |
-| `GET /volumes` | `volume.go:50` (`findVolume`); `object_state.go:60` (`objectRecords`, from Up and Remove); `manage.go:270` (Remove) | Name filter, or label filters `devcontainer.compose.objects` + `devcontainer.local_folder=<workspace>` | Needs rule `GET /volumes`. Ownership drops the label filters (see below) | Measured |
+| `GET /volumes` | `volume.go:50` (`findVolume`); `object_state.go:60` (`objectRecords`, from Up and Remove); `manage.go:270` (Remove) | Name filter, or label filters `devcontainer.compose.objects` + `devcontainer.local_folder=<workspace>` | Needs rule `GET /volumes`. Ownership keeps the label filters and adds the owner label (see below) | Measured |
 | `POST /volumes/create` | `volume.go:35` (`ensureVolumes`); `object_state.go:46` (`publishObjectOwnership`, first config/secret materialization in Up) | Name, Driver, DriverOpts, Labels; volume inspector | Needs rule. Default inspector denies custom drivers and any DriverOpts (including local bind devices) | Measured; bind-device denial pinned by test |
 | `DELETE /volumes/{name}?force=1` | `object_state.go:79` (`removeObjectRecords`, from Up's `removeRetiredObjects` at `up.go:347` and from Remove); `manage.go:278` (Remove) | No body | Needs rule `DELETE /volumes/*`: **Up** can call it, not only teardown | Measured (Remove); Up branch inferred |
-| `GET /containers/json` | `existing.go:22` (`FindExisting`, per service in Up); `manage.go:93,310,347` (primary and project lookup, Stop, Remove); `object_state.go:113` (unfiltered, `removeRetiredObjects`) | `all=1`, label filters on project, service, local folder, primary | Same rule as single container. Ownership drops the label filters. Default redaction replaces `Mounts[].Source` | Measured |
+| `GET /containers/json` | `existing.go:22` (`FindExisting`, per service in Up); `manage.go:93,310,347` (primary and project lookup, Stop, Remove); `object_state.go:113` (unfiltered, `removeRetiredObjects`) | `all=1`, label filters on project, service, local folder, primary | Same rule as single container. Ownership keeps the label filters and adds the owner label. Default redaction replaces `Mounts[].Source` | Measured |
 | `GET /containers/{id}/json` | `up.go:413,437,505`, `wait.go:72` (`depends_on` conditions), `manage.go:118` | No body | Same rule as single container | Measured |
 | `GET /images/{name}/json` | `entrypoint.go:45`, `up.go:225` (`dockerimage.InspectConfig`); `up.go:398` (`dockerimage.Ensure`) | No body | Same rule as single container | Measured |
 | `GET /info` | `internal/dockerimage/image.go:83` via `InspectConfig`; `gpu.go:26` via `gpu.Requested` | No body | Conditional; needs rule when an image is not local and has no platform, or when `hostRequirements.gpu` is set with detect mode | Inferred |
@@ -349,15 +348,7 @@ single-container create:
 
 ### Ownership and label lookups
 
-With `ownership.owner` set, `addOwnerLabelFilter`
-(`app/internal/ownership/middleware.go:1175`) replaces every client value under
-the `label` list filter with the owner label (plus any visibility selectors).
-Upstream drops the client values on purpose and pins it with
-`TestListLabelFilterKeepsVisibilityScopeWhileDroppingClientValues`: Swarm
-control-plane lists fold `label` into a map, so a client value that repeats the
-owner key could displace the owner selector.
-
-DCB finds containers and object records only through those label filters and
+DCB finds containers and object records only through `label` list filters, and
 takes the first result without checking its labels:
 
 - Compose `FindExisting` (`existing.go:22`), `findPrimary` (`manage.go:93`),
@@ -366,25 +357,36 @@ takes the first result without checking its labels:
 - Single-container `findLabeled` (`pkg/host/docker/spawn.go:85`), which backs
   `Up`'s reuse lookup, `Inspect`, `Stop` and `RemoveByID` lookups.
 
-Measured through an ownership-enabled proxy:
+With `ownership.owner` set, `addOwnerLabelFilter`
+(`app/internal/ownership/middleware.go`) forwards the owner label, then any
+visibility selectors, then the client's own `label` values, on
+`GET /containers/json`, `/images/json`, `/networks`, `/volumes` and the libpod
+container, image, pod, network and volume lists
+(`app/internal/ownership/fork_label_filter.go`). The daemon requires every
+`label` value to match on those lists (Docker `Args.MatchKVList`, Podman
+`MatchLabelFilters`, read from source), so a client value can only narrow the
+owned set. A client value whose key is the owner label key (`key`,
+`key=value`, `key!=value`, with surrounding spaces) is dropped.
 
-- A list for `project=<p>, service=side` returned the `app` container. The
-  same filter sent directly to the daemon returned nothing.
-- Compose `Up` therefore read the primary as the existing `side` container,
-  found its config hash different, stopped and removed the primary, created
-  `side`, then failed at "inspect primary".
-- Compose `Remove` read every owned volume as an object record and stopped at
-  DCB's own record-shape check ("invalid materialized object ownership
-  record"), before deleting anything.
+Swarm lists (`/services`, `/tasks`, `/secrets`, `/configs`, `/nodes`), events
+and prune still drop every client `label` value. Swarm folds `label` into a map,
+so a client value that repeats the owner key could displace the owner selector;
+Podman ORs event filters.
 
-Inferred for Menagerie with one owner for all workspaces: a workspace's `Up`,
-`Stop` or rebuild can select another workspace's container. Owner-label
-isolation and DCB label lookup cannot both hold at this base. Resolving it
-needs a ruling: for example, a fork change that keeps client `label` values
-whose key is not the owner key on Engine (non-Swarm) lists, or a DCB change
-that checks labels on the returned containers.
-`TestForkEndpointsDCBLabelLookupsLoseClientLabels` pins the four DCB lookup
-shapes as dropped.
+With one owner for all Menagerie workspaces, a DCB lookup therefore returns only
+the requested workspace's containers. Evidence:
+
+- `TestForkEndpointsDCBLabelLookupsKeepClientLabels` pins the four DCB lookup
+  shapes as forwarded with the owner label.
+- `TestForkOwnershipDCBLookupsStayInTheirWorkspace` runs those shapes against a
+  fake daemon that applies Docker's matching rule to two workspaces under one
+  owner and to another owner's look-alike. Each lookup returns only the
+  requested workspace's resources.
+- `TestForkOwnershipClientOwnerKeyNeverWidens` sends each owner-key spelling in
+  both filter shapes and finds no other owner's resource in the result.
+
+A Compose `Up` through an ownership-enabled proxy with this filter is not
+measured here; the acceptance suite covers it.
 
 ### Mount-path redaction
 
@@ -464,8 +466,8 @@ container through the archive API, so the cache does not need an
   root, in every container the profile can reach. Its bound is owner-label
   isolation, `allow_privileged=false`, and the target container's
   capabilities and mounts.
-- Enabling ownership without resolving the label-lookup incompatibility, or
-  relying on caller-supplied labels or list filters as isolation.
+- Relying on caller-supplied labels or list filters as isolation. Only the
+  owner label isolates; client `label` values only narrow the owned set.
 - Granting `/networks/**` or `/volumes/**` for Compose.
 - Compose templates that use `extra_hosts`, `group_add`, static network
   addresses, MAC addresses, network or volume driver options, plugin drivers,
@@ -487,7 +489,7 @@ uses a stored-exec lookup stub and does not test a real hijack, daemon ownership
 or exceptions. `TestForkEndpointsComposeCandidatePolicy` does the same for the
 Compose routes with DCB-shaped bodies, and each negative changes one field of a
 valid control. `TestForkEndpointsComposeBroadGrantsWiden` compares the narrow
-rows with broad grants. `TestForkEndpointsDCBLabelLookupsLoseClientLabels`
+rows with broad grants. `TestForkEndpointsDCBLabelLookupsKeepClientLabels`
 pins the ownership filter result for DCB's lookup filters.
 `TestForkCommandContainerEndpointsReadExfiltrationAck` pins which
 command-container routes need the read-exfiltration acknowledgment.
