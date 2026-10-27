@@ -27,6 +27,8 @@ import (
 // A source that no allowlist admits was not created under this policy (another
 // client, a host tool, a wider profile, an allowlist changed since), and its
 // start passes as before, so the re-check narrows nothing that create allowed.
+// A policy that applies workspace exceptions is stricter: there every source
+// is held to the request's workspace (fork_start_recheck_workspace.go).
 // See docs/content/docs/symlink-bind-sources.mdx for the gaps that remain.
 
 // Reason codes of the start re-check. They are distinct from the create
