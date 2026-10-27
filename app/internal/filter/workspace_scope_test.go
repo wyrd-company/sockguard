@@ -478,3 +478,51 @@ func TestDenyWorkspaceScopeReasonAPI(t *testing.T) {
 		t.Fatalf("no identity: %q", reason)
 	}
 }
+
+// The Compose staging root is a per-workspace root: the workspace manager
+// sets devcontainer-builder's UserDataFolder to <staging>/<basename W>, so a
+// staged config or secret bind is in W's own staging folder.
+func TestWorkspaceScopeComposeStagingRoot(t *testing.T) {
+	f := newWorkspaceExceptionsFixture(t)
+	for _, ws := range []string{"alpha", "beta"} {
+		if err := os.MkdirAll(filepath.Join(f.staging, ws, "objects-1"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAtomic(t, f.file, mustJSON(t, workspaceDoc(workspaceEntryDoc(f.alpha, map[string]any{"privileged": true}))))
+	store, err := NewWorkspaceExceptionStore(WorkspaceExceptionStoreOptions{
+		Path: f.file, WorkspaceRoot: f.root, PerWorkspaceRoots: []string{f.root, f.staging}, MaxBytes: 1 << 20, Logger: testLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &wsHarness{t: t, f: f, store: store, logs: &bytes.Buffer{}}
+	opts := h.options(func(o *ContainerCreateOptions) { o.AllowedBindMounts = []string{f.root, f.staging} })
+	staged := func(header string, workspace string) wsCreate {
+		return wsCreate{
+			hostConfig: map[string]any{
+				"Binds": []string{f.alpha + "/src:/src"},
+				"Mounts": []map[string]any{
+					{"Type": "bind", "Source": filepath.Join(f.staging, "alpha", "objects-1", "probecfg"), "Target": "/etc/probe.conf", "ReadOnly": true},
+					{"Type": "bind", "Source": filepath.Join(f.staging, "alpha", "objects-1", "secret"), "Target": "/run/secrets/token", "ReadOnly": true},
+				},
+			},
+			headers: map[string][]string{header: {workspace}},
+		}
+	}
+	h.admit(opts, staged(WorkspaceHeader, f.alpha))
+	h.admit(opts, staged(WorkspaceThrowawayHeader, f.alpha))
+	beta := filepath.Join(f.root, "beta")
+	if err := os.MkdirAll(beta, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := staged(WorkspaceHeader, beta)
+	other.hostConfig["Binds"] = []string{beta + "/src:/src"}
+	h.deny(opts, other, "outside this workspace's folder")
+	// W's own folder under the staging root is not inside W, so a staged
+	// bind still breaks the exception's bind agreement unless the folder is
+	// one of W's extraBindSources (contract B(a)).
+	priv := staged(WorkspaceHeader, f.alpha)
+	priv.hostConfig["Privileged"] = true
+	h.deny(opts, priv, "privileged containers are not allowed", "workspace exception not applied")
+}
