@@ -219,11 +219,15 @@ values and dependency error text are not logged. Header-validation and
 label-kind reasons never quote header values.
 
 The daemon's re-resolution of `HostConfig.Binds` was measured on dockerd
-29.9.2. Re-resolution of a local-volume bind device at start is inferred from
-code reading, not measured here. Acceptance must record the daemon and
-version, an unchanged admitted control, proxy denial after a device swap,
-and a separate observable direct-daemon control in owned temporary paths.
-Proxy denial alone does not establish daemon re-resolution.
+29.9.2. `TestAcceptance/LocalVolumeDeviceReresolution` also measured local-volume
+bind-device re-resolution on Docker 29.9.2 with both containerd and classic
+image stores. The unchanged device starts through the proxy; replacing it
+with a symlink into another owned directory is denied at proxy start. A
+separate direct-daemon control observes the mounted marker change from the
+original directory to the replacement. Proxy denial alone is not mechanism
+proof. Other Engine versions and separate BuildKit workers are unproven.
+The baseline profile omits restart; explicitly named route-enabled variants
+provide inspected-restart evidence separately from baseline route denial.
 
 ## Gaps that remain
 
