@@ -63,12 +63,28 @@ func (p containerCreatePolicy) inspectWithWorkspaceExceptions(logger *slog.Logge
 	}
 
 	match := WorkspaceExceptionMatch{Outcome: WorkspaceExceptionNone}
+	identity := WorkspaceIdentity{Kind: WorkspaceIdentityNone}
+	matchReq := workspaceExceptionRequestFromCreate(&req)
 	if p.applyWorkspaceExceptions {
-		match = MatchWorkspaceException(snap, workspaceExceptionRequestFromCreate(&req))
+		var reason string
+		if identity, reason = workspaceIdentity(req.Labels, snap); reason != "" {
+			return reason, nil
+		}
+		// A throwaway identity scopes binds and never grants.
+		if identity.Kind == WorkspaceIdentityDevcontainer {
+			match = MatchWorkspaceException(snap, matchReq)
+		}
 	}
 	reason, err := p.inspectMatched(logger, r, normalizedPath, &req, restart.HostConfig.RestartPolicy.Name, match)
 	if err != nil {
 		return "", err
+	}
+	if reason == "" && p.applyWorkspaceExceptions {
+		allowed := p.allowedBindMounts
+		if match.Applied() {
+			allowed = unionStrings(allowed, match.entry.grants.extraBindSources)
+		}
+		reason = DenyWorkspaceScopeReason(snap, identity, matchReq, allowed)
 	}
 	if reason != "" && match.Outcome == WorkspaceExceptionNotApplied {
 		reason += "; " + match.Detail

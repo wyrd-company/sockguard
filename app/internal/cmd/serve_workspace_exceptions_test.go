@@ -100,6 +100,11 @@ func TestLoadWorkspaceExceptions(t *testing.T) {
 	if err := runtime.loadWorkspaceExceptions(&bad, newDiscardLogger()); err == nil || !strings.Contains(err.Error(), "not canonical") {
 		t.Fatalf("symlinked root: err %v, want not canonical", err)
 	}
+	badRoots := cfg
+	badRoots.WorkspaceExceptions.PerWorkspaceRoots = []string{f.root, link}
+	if err := runtime.loadWorkspaceExceptions(&badRoots, newDiscardLogger()); err == nil || !strings.Contains(err.Error(), "per-workspace root") {
+		t.Fatalf("symlinked per-workspace root: err %v, want refused", err)
+	}
 	if err := runtime.loadWorkspaceExceptions(&cfg, newDiscardLogger()); err != nil || runtime.workspaceExceptions == nil {
 		t.Fatalf("missing file must start with no exceptions: err %v", err)
 	}
@@ -183,6 +188,13 @@ func TestServeChainAppliesWorkspaceExceptions(t *testing.T) {
 			}
 			if code := post(gamma); code != http.StatusForbidden {
 				t.Fatalf("unmatched create: status %d, want 403", code)
+			}
+			// Scoping: alpha's label may not bind gamma's folder.
+			rec := httptest.NewRecorder()
+			crossBody := `{"Image":"busybox","Labels":{"devcontainer.local_folder":"` + f.alpha + `"},"HostConfig":{"Binds":["` + f.alpha + `:/w","` + gamma + `:/other"]}}`
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1.51/containers/create", strings.NewReader(crossBody)))
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("cross-workspace bind: status %d, want 403", rec.Code)
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())
