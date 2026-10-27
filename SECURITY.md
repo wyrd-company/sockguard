@@ -25,12 +25,6 @@ vulnerability in it through
 on this repository. A private report keeps its details private and ties
 disclosure to the advisory and fix workflow.
 
-You can expect:
-
-- **Acknowledgement** within 48 hours
-- **Status update** within 7 days
-- **Fix or mitigation** as soon as feasible, depending on severity
-
 We appreciate responsible disclosure and will credit reporters in the
 release notes unless you prefer to stay anonymous.
 
@@ -126,9 +120,3 @@ severity. Please include as much of the following as you can:
   physical access.
 - **Disclosure timeline** — when you found it, whether you've told
   anyone else, and whether a specific embargo date suits you.
-
-If the bug involves a supply-chain concern (a tampered image, a cosign
-verification failure, a compromised dependency), also include the
-exact `cosign verify` command you ran and its full output. See the
-[image verification guide](docs/content/docs/verification.mdx) for
-the canonical invocation.
