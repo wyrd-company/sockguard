@@ -67,8 +67,12 @@ cross-container ownership or read visibility: deployment must configure those
 separately if required.
 
 The Menagerie design also requires bind-source revalidation at every start and
-restart. Route admission in this report does not prove that lifecycle guard;
-the fork's bind-policy work and acceptance tests must supply that evidence.
+restart. The proxy reads the container and checks its bind sources again
+before it forwards `POST /containers/{id}/start` or
+`POST /containers/{id}/restart`; see
+[Re-check at start and restart](content/docs/symlink-bind-sources.mdx#re-check-at-start-and-restart).
+Route admission in this report does not prove that guard; its tests and the
+acceptance tests supply that evidence.
 
 | Method and path | DCB caller | Upgrade or inspected input | Policy result / requirement |
 | --- | --- | --- | --- |

@@ -122,6 +122,9 @@ type PolicyConfig struct {
 	// exists and why it is deliberately not the richer buildkitproxy.Policy
 	// translation.
 	Buildkit BuildkitOptions
+	// ForkStartRecheck carries the fork's container start and restart
+	// bind-source re-check inspector (fork_start_recheck.go).
+	ForkStartRecheck ForkStartRecheckOptions
 }
 
 // Options configures filter middleware behavior.
@@ -509,6 +512,9 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// request body, so it costs nothing when TunnelConfigured is false
 		// (the default).
 		{http.MethodPost, matchesBuildkitTunnelInspection, inspectSeverityCritical, newBuildkitPolicy(cfg.Buildkit).inspect, "failed to inspect buildkit tunnel request", "unable to inspect buildkit tunnel request"},
+		// Fork-owned: container start and restart re-check bind sources
+		// against the create allowlists (fork_start_recheck.go).
+		{http.MethodPost, matchesForkStartRecheckInspection, inspectSeverityCritical, newForkStartRecheckPolicy(cfg).inspect, "failed to re-check container start bind sources", "unable to re-check container start bind sources"},
 	}
 	byMethod := groupInspectPoliciesByMethod(all)
 	return runtimePolicy{

@@ -8,8 +8,8 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/bindfs"
 )
 
-// No test in this package needs a real bind-source fixture, so every
-// bind-source lookup is a plain directory. A serve-chain test that names a
+// Every bind-source lookup is a plain directory, except where a test opens
+// its own temporary root (TestServeChainForkStartRecheckDeniesASwappedBindSource). A serve-chain test that names a
 // host path ("/usr/libexec/podman/catatonit", "/srv/roots") then gets the
 // same result on every host, whatever is installed there.
 func init() {
