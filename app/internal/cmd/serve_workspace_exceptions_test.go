@@ -218,3 +218,32 @@ func TestServeChainAppliesWorkspaceExceptions(t *testing.T) {
 		})
 	}
 }
+
+// A replace between the startup load and the start of the watch is picked
+// up once the watch starts, with no further event.
+func TestWatchWorkspaceExceptionsReloadsOnStart(t *testing.T) {
+	f := newServeWorkspaceFixture(t)
+	cfg := f.config("/nonexistent.sock")
+	runtime := &serveRuntime{}
+	if err := runtime.loadWorkspaceExceptions(&cfg, newDiscardLogger()); err != nil {
+		t.Fatal(err)
+	}
+	f.write(t, true)
+	if got := runtime.workspaceExceptions.Load().State(); got != filter.WorkspaceExceptionsMissing {
+		t.Fatalf("store reloaded before the watch started: %q", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := runtime.watchWorkspaceExceptions(ctx, &cfg, newDiscardLogger())
+	defer func() { cancel(); stop() }()
+	// Debounce is 250ms by default; 5s covers a loaded shared host.
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.workspaceExceptions.Load().State() != filter.WorkspaceExceptionsLoaded {
+		if time.Now().After(deadline) {
+			t.Fatal("the file written before the watch started was not loaded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stopNil := (*serveRuntime)(nil).watchWorkspaceExceptions(ctx, &cfg, newDiscardLogger()); stopNil == nil {
+		t.Fatal("nil runtime must return a stop func")
+	}
+}

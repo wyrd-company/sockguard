@@ -63,6 +63,10 @@ func (r *serveRuntime) watchWorkspaceExceptions(ctx context.Context, cfg *config
 		logger.Error("workspace exceptions reload disabled: failed to start watcher", "error", err, "path", store.Path())
 		return func() {}
 	}
+	// The store loaded the file before the watch existed. One reload queued
+	// now runs after Run adds the watch, so a replace in between is not
+	// missed.
+	rl.Trigger()
 	loopCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
