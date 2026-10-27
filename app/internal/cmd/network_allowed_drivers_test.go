@@ -336,9 +336,8 @@ func TestNetworkAllowedDriversIsScopedToItsClientProfile(t *testing.T) {
 `)
 	const assigned, unassigned = "192.0.2.10:4000", "198.51.100.10:4000"
 	body := `{"Image":"alpine","HostConfig":{"NetworkMode":"lan"}}`
-	// A profile policy answers with the minimal deny body, so only the status
-	// and the absence of a forward are checked.
-	assertNetworkDriverDenied(t, serveNetworkDriverRequest(handler, assigned, "/containers/create", body), daemon, "")
+	assertNetworkDriverDenied(t, serveNetworkDriverRequest(handler, assigned, "/containers/create", body), daemon,
+		`container create denied: network \"lan\" has driver \"macvlan\"`)
 	if lookups, _ := daemon.seen(); lookups != 1 {
 		t.Fatalf("daemon saw %d network lookups, want 1", lookups)
 	}
