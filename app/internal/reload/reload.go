@@ -70,6 +70,12 @@ type Options struct {
 	// this nil; the Reloader uses time.Now in that case. Mainly a test seam
 	// for the poll-fallback path.
 	Now func() time.Time
+
+	// TriggerOnRemove also arms a reload when the watched file is removed.
+	// Fork-owned: the workspace exceptions file reads a removed file as "no
+	// exceptions", so a removal has to reach OnReload. The config file
+	// keeps its last good contents on removal and leaves this false.
+	TriggerOnRemove bool
 }
 
 // Watcher is the small subset of *fsnotify.Watcher this package uses,
@@ -356,6 +362,9 @@ func (r *Reloader) eventTargetsConfig(ev fsnotify.Event) bool {
 	// Create. Either way, the Create / Write that lands on the same
 	// basename is the signal we care about.
 	if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Chmod|fsnotify.Rename) != 0 {
+		return true
+	}
+	if r.opts.TriggerOnRemove && ev.Op&fsnotify.Remove != 0 {
 		return true
 	}
 	return false
