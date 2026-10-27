@@ -30,7 +30,7 @@ func TestForkEndpointsCandidatePolicy(t *testing.T) {
 	opts := Options{PolicyConfig: PolicyConfig{
 		ImagePull:       ImagePullOptions{AllowedRegistries: []string{"registry.example.test"}},
 		ContainerRemove: ContainerRemoveOptions{AllowForce: true, AllowRemoveVolumes: true},
-		Exec: ExecOptions{AllowedCommands: [][]string{{"/bin/sh", "-c", "**"}}, AllowRootUser: true,
+		Exec: ExecOptions{AllowAnyCommand: true, AllowRootUser: true,
 			InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
 				return ExecInspectResult{Command: []string{"/bin/sh", "-c", "true"}}, true, nil
 			}},
