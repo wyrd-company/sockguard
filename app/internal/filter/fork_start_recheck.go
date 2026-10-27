@@ -43,18 +43,29 @@ type ForkStartRecheckInspectFunc func(ctx context.Context, id string) (ForkStart
 // ForkStartRecheckOptions configures the bind-source re-check on container
 // start and restart. The allowlists are the active policy's
 // ContainerCreate.AllowedBindMounts and LibpodContainerCreate.AllowedBindMounts;
-// this only carries the runtime inspector, which the serve chain attaches.
+// this only carries the runtime collaborators, which the serve chain attaches.
 type ForkStartRecheckOptions struct {
 	InspectContainer ForkStartRecheckInspectFunc
+	// Workspace is set for a policy that applies workspace exceptions. A
+	// start then has to name its workspace in a header, and its bind sources
+	// are scoped to that workspace (fork_start_recheck_workspace.go). Nil
+	// leaves the policy as it is.
+	Workspace ForkStartRecheckWorkspaceFunc
 }
 
 // ForkStartRecheckContainer is the part of GET /containers/{id}/json the
 // re-check reads.
 type ForkStartRecheckContainer struct {
+	Config     ForkStartRecheckConfig     `json:"Config"`
 	HostConfig ForkStartRecheckHostConfig `json:"HostConfig"`
 	// Mounts holds the mount points the daemon mounts at start, with the
 	// source it stored at create.
 	Mounts []ForkStartRecheckMount `json:"Mounts"`
+}
+
+// ForkStartRecheckConfig holds the container's labels.
+type ForkStartRecheckConfig struct {
+	Labels map[string]string `json:"Labels"`
 }
 
 // ForkStartRecheckHostConfig holds the bind specs as the create request wrote
@@ -108,16 +119,25 @@ type forkStartRecheckPolicy struct {
 	// "/". It is empty when no allowlist needs the re-check.
 	allowlists       [][]string
 	inspectContainer ForkStartRecheckInspectFunc
+	workspace        ForkStartRecheckWorkspaceFunc
+	// workspaceBase is every entry of both create allowlists, "/" included,
+	// for the workspace scope.
+	workspaceBase []string
 }
 
 func newForkStartRecheckPolicy(cfg PolicyConfig) forkStartRecheckPolicy {
-	p := forkStartRecheckPolicy{inspectContainer: cfg.ForkStartRecheck.InspectContainer}
+	p := forkStartRecheckPolicy{
+		inspectContainer: cfg.ForkStartRecheck.InspectContainer,
+		workspace:        cfg.ForkStartRecheck.Workspace,
+	}
 	for _, entries := range [][]string{cfg.ContainerCreate.AllowedBindMounts, cfg.LibpodContainerCreate.AllowedBindMounts} {
 		allowed := forkStartRecheckAllowlist(entries)
+		p.workspaceBase = append(p.workspaceBase, allowed...)
 		if slices.Contains(allowed, "/") {
 			// "/" admits every source and the create check resolves none, so
-			// no start can fail the re-check.
-			return forkStartRecheckPolicy{}
+			// no start can fail the allowlist re-check.
+			p.allowlists = nil
+			break
 		}
 		if len(allowed) > 0 {
 			p.allowlists = append(p.allowlists, allowed)
@@ -167,12 +187,19 @@ func forkStartRecheckTarget(normalizedPath string) (id, subject string, ok bool)
 }
 
 func (p forkStartRecheckPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if r == nil || r.Method != http.MethodPost || len(p.allowlists) == 0 {
+	if r == nil || r.Method != http.MethodPost || (len(p.allowlists) == 0 && p.workspace == nil) {
 		return "", nil
 	}
 	id, subject, ok := forkStartRecheckTarget(normalizedPath)
 	if !ok {
 		return "", nil
+	}
+	var workspace ForkStartRecheckWorkspace
+	if p.workspace != nil {
+		var err error
+		if workspace, err = forkStartRecheckWorkspaceFromHeaders(r.Header, subject); err != nil {
+			return "", err
+		}
 	}
 	if p.inspectContainer == nil {
 		return "", forkStartRecheckInspectFailed(subject, id)
@@ -184,6 +211,9 @@ func (p forkStartRecheckPolicy) inspect(logger *slog.Logger, r *http.Request, no
 	}
 	if reason := p.denyReason(subject, container); reason != "" {
 		return "", newRequestRejectionErrorWithCode(http.StatusForbidden, forkStartRecheckReasonCodeBindSourceDenied, reason)
+	}
+	if p.workspace != nil {
+		return "", p.denyWorkspace(subject, workspace, container)
 	}
 	return "", nil
 }
