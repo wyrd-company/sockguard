@@ -89,7 +89,9 @@ esac`,
     // gate owner's locks. Close only this child process's descriptor copies.
     const result = spawnSync(
       "bash",
-      ["-c", 'exec 200>&- 201>&-; exec bash "$1"', "--", join(root, "tests/acceptance/run.sh")],
+      fault === "inherited"
+        ? ["-c", 'exec 200>&- 201>&-; exec bash "$1"', "--", join(root, "tests/acceptance/run.sh")]
+        : [join(root, "tests/acceptance/run.sh")],
       {
         encoding: "utf8",
         env: {
