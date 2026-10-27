@@ -10,6 +10,8 @@ relationships:
     - ../app/internal/buildkitproxy/fork_endpoints_builder_test.go
     - ../app/internal/cmd/fork_command_container_endpoints_test.go
     - ../app/internal/ownership/paths.go
+    - ../app/internal/filter/symlink_bind_resolve.go
+    - ../app/internal/filter/build.go
 ---
 
 # Menagerie Engine endpoint compatibility
@@ -433,6 +435,19 @@ routes reach only containers the profile owns.
 The template cache is not a bind source. Hooks copy template content into the
 container through the archive API, so the cache does not need an
 `allowed_bind_mounts` entry.
+
+### Proxy deployment
+
+- **Writable `/tmp` with `read_only: true`.** The archive inspector spools each
+  `PUT /containers/*/archive` body to a temporary file in `$TMPDIR` (default
+  `/tmp`). On a read-only root filesystem, give the proxy a writable tmpfs at
+  `/tmp`. Otherwise the request fails with `create temp file … read-only file
+  system`.
+- **Search permission on every per-workspace root.** Bind-source resolution
+  looks up each path component. Under a directory the proxy cannot search (for
+  example a `0700` folder owned by another user), the lookup gets
+  `permission denied` and the create, start or restart is denied, fail-closed. The proxy needs
+  search (`x`) permission on every per-workspace root path and its parents.
 
 ## Menagerie must avoid
 
