@@ -139,12 +139,17 @@ func removeForkFieldPolicy(h *forkFieldChain) error {
 	return nil
 }
 
+// create builds a primary container eligible for grants. The trusted header
+// still supplies identity; unlabeled BASE controls remove this label explicitly.
 func (h *forkFieldChain) create(host map[string]any) map[string]any {
 	hc := map[string]any{"Binds": []string{h.f.alpha + ":/workspace"}}
 	for k, v := range host {
 		hc[k] = v
 	}
-	return map[string]any{"Image": "busybox", "HostConfig": hc}
+	return map[string]any{
+		"Image": "busybox", "HostConfig": hc,
+		"Labels": map[string]string{filter.WorkspaceLocalFolderLabel: h.f.alpha},
+	}
 }
 
 func (h *forkFieldChain) request(t *testing.T, method, uri, body string, headers http.Header, want int, reason string) []forkFieldCall {
