@@ -22,6 +22,7 @@ const routes = [
   "/docs/security",
   "/docs/symlink-bind-sources",
   "/docs/verification",
+  "/docs/workspace-exceptions",
 ] as const;
 
 export const ANALYTICS_ROUTES: ReadonlySet<string> = new Set(routes);

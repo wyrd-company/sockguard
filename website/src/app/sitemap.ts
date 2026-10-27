@@ -50,6 +50,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       "security",
       "symlink-bind-sources",
       "verification",
+      "workspace-exceptions",
     ].map((slug) => ({
       url: `${BASE_URL}/docs/${slug}`,
       lastModified: new Date(),

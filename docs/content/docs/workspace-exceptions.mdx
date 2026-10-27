@@ -1,0 +1,326 @@
+---
+title: Workspace exceptions
+description: Fork-only. The workspace exceptions file, which gives one workspace folder gates on Docker-compat container create that the base policy keeps closed, and the require_no_restart_policy setting.
+---
+
+This page describes a change that exists only in the
+[wyrd-company fork](https://github.com/wyrd-company/sockguard).
+
+A workspace exception gives the containers of one workspace folder gates on
+Docker-compat `POST /containers/create` that the base policy keeps closed. The
+operator writes the exceptions file, by hand or with the operator's own
+tooling. The proxy only reads it. A Menagerie deployment mounts the file's
+directory read-only and never writes the file.
+
+## Scope
+
+- The file affects only Docker-compat `POST /containers/create`, with any API
+  version prefix.
+- Libpod create, service create and update, plugin routes, exec create and
+  start, `POST /containers/{id}/update` and BuildKit never get exceptions.
+  Their own settings apply.
+- An exception only opens gates. It never closes a gate that the base policy
+  opens.
+
+## Configuration
+
+```yaml
+workspace_exceptions:
+  file: /etc/sockguard/exceptions/workspace-exceptions.json
+  workspace_root: /srv/workspaces
+clients:
+  profiles:
+    - name: menagerie
+      request_body:
+        container_create:
+          allowed_bind_mounts: ["/srv/workspaces"]
+          apply_workspace_exceptions: true
+          require_no_restart_policy: true
+```
+
+| Key | Environment variable | Default | Meaning |
+| --- | --- | --- | --- |
+| `workspace_exceptions.file` | `SOCKGUARD_WORKSPACE_EXCEPTIONS_FILE` | empty | Absolute path of the exceptions file. Empty turns the feature off. |
+| `workspace_exceptions.workspace_root` | `SOCKGUARD_WORKSPACE_EXCEPTIONS_WORKSPACE_ROOT` | empty | Absolute path of the folder whose direct children are workspaces. Required when `file` is set. |
+| `request_body.container_create.apply_workspace_exceptions` | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_APPLY_WORKSPACE_EXCEPTIONS` | `false` | The block opts in to the exceptions file. Also valid in `clients.profiles[].request_body.container_create`. Requires `workspace_exceptions.file`. |
+| `request_body.container_create.require_no_restart_policy` | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_NO_RESTART_POLICY` | `false` | Denies a restart policy on create. See [Restart policy](#restart-policy). Also valid in a profile's block. Needs no exceptions file. |
+
+- Both `workspace_exceptions` keys are fixed at start-up. A config reload that
+  changes either one is refused, and the change needs a restart.
+- At start-up the proxy resolves `workspace_root` in its own mount namespace.
+  If the root does not resolve to itself (`filepath.EvalSymlinks(root) ==
+  root`), start-up fails.
+- Without `workspace_exceptions.file` the proxy behaves exactly as without
+  this feature.
+
+## File format
+
+The file is one JSON object, UTF-8. Its JSON Schema is
+`docs/public/workspace-exceptions.schema.json` in the repository, published
+with these docs as `workspace-exceptions.schema.json`. The proxy validates the
+file itself and does not read the schema.
+
+```json
+{
+  "version": 1,
+  "exceptions": [
+    {
+      "workspace": "/srv/workspaces/alpha",
+      "grants": {
+        "privileged": true,
+        "extraBindSources": ["/var/run/docker.sock"]
+      },
+      "approval": {
+        "by": { "issuer": "https://id.example.org", "subject": "user-0001", "name": "Manager One" },
+        "at": "2026-01-02T03:04:05Z",
+        "note": "docker-in-docker feature"
+      }
+    }
+  ]
+}
+```
+
+- `version` is required and must be `1`. `exceptions` is required and can be
+  empty.
+- Each entry has `workspace`, `grants` and `approval`, all required.
+- Decoding is strict. The whole file is invalid when any of these is true:
+  - a key is not one of the names on this page, spelled exactly
+    (`"Privileged"` is not `privileged`);
+  - an object has the same key twice, or two keys that differ only in letter
+    case;
+  - there is data after the object, or the file is not valid UTF-8;
+  - the file is larger than the config file bound (16 MiB);
+  - a value has the wrong type, or is `null`;
+  - a value breaks a rule below.
+
+### Workspace keys
+
+- `workspace` is an absolute, clean path with no trailing slash, and a direct
+  child of `workspace_root`: `filepath.Dir(workspace) == workspace_root`.
+- No two entries have the same `workspace`. Paths are case-sensitive.
+- Match time adds two filesystem rules. If one fails, the entry does not
+  match, and the file stays valid:
+  - the workspace resolves to itself (no symlink on its path);
+  - the workspace is a directory.
+- A deleted workspace folder stops matching. A folder created later at the
+  same path matches again. Remove the entry when a workspace is removed or
+  renamed.
+
+### Grants
+
+A grant field that is absent means "not granted". Grants are independent:
+`privileged: true` does not grant `capAdd`, `devices` or `securityOpt`.
+
+| Request field | Grant | What it opens, and nothing else |
+| --- | --- | --- |
+| `HostConfig.Privileged` | `privileged: true` | the `allow_privileged` gate |
+| `HostConfig.CapAdd` | `capAdd: ["SYS_PTRACE"]` | adds the names to `allowed_capabilities`, normalized the same way (letter case, `CAP_` prefix). `"ALL"` opens `allow_all_capabilities` |
+| `HostConfig.PidMode`, `IpcMode`, `NetworkMode`, `UsernsMode`, `CgroupnsMode` | `namespaces: ["pid", "ipc", "network", "userns", "cgroupns"]` | the value `host` for each listed namespace |
+| `HostConfig.Devices` | `devices: ["/dev/fuse"]` | adds the paths to `allowed_devices`, with the same prefix rule. `"/"` is invalid |
+| `HostConfig.DeviceCgroupRules` | `deviceCgroupRules: ["c 10:229 rwm"]` | adds the rules to `allowed_device_cgroup_rules`, canonicalized the same way |
+| `HostConfig.DeviceRequests` | `gpus: true` | the `allow_device_requests` gate |
+| bind sources outside the workspace | `extraBindSources: ["/var/run/docker.sock"]` | adds the paths to `allowed_bind_mounts`, compared the same way after symlink resolution. `"/"` is invalid |
+| `HostConfig.SecurityOpt` | `securityOpt: ["seccomp=unconfined"]` | one entry from a closed set: `seccomp=unconfined`, `apparmor=unconfined`, `apparmor=<profile>`, `label=disable`, `systempaths=unconfined`. Each opens the matching `deny_*` setting and, when that profile allowlist is set, adds that one value to it |
+| `HostConfig.Runtime` | `runtimes: ["sysbox-runc"]` | adds the names to `allowed_runtimes` |
+| `HostConfig.Sysctls` | `sysctls: ["net.ipv4.ip_forward"]` | admits a request whose sysctl keys are all listed. Values are not compared |
+| `HostConfig.RestartPolicy` | `restartPolicy: ["unless-stopped"]` | admits the listed names past `require_no_restart_policy`. Closed set: `always`, `unless-stopped`, `on-failure`. `no` or any other name makes the file invalid |
+
+Details of the grants:
+
+- A namespace gate opened only by a grant admits `host` and nothing more.
+  `ns:<path>` stays under the base policy's gate. `container:<ref>` values
+  stay under `restrict_namespace_sharing`.
+- An empty `allowed_seccomp_profiles` or `allowed_apparmor_profiles` admits
+  every profile, so a grant does not add to an empty list.
+- `systempaths=unconfined` opens `deny_unconfined_system_paths`, which also
+  covers the equivalent empty `MaskedPaths` and `ReadonlyPaths`.
+- Inline seccomp profiles, `allow_all_devices` and the global `allow_sysctls`
+  cannot be granted.
+
+These have no grant and stay denied for every create:
+
+| Field | Reason |
+| --- | --- |
+| `HostConfig.UTSMode=host` | denied unconditionally by the base policy |
+| `HostConfig.ExtraHosts` (`--add-host`, Compose `extra_hosts`) | denied unconditionally; unsupported for workspace devcontainers |
+| `HostConfig.GroupAdd` (`--group-add`, Compose `group_add`) | denied unconditionally; unsupported for workspace devcontainers |
+| `HostConfig.CgroupParent` | places the container outside its resource controls |
+| `HostConfig.VolumesFrom` | imports another container's mounts, whose sources are not in the request body |
+
+### Approval
+
+`approval` records who approved the entry:
+
+- `by.issuer` and `by.subject`: required, not empty. The OIDC `iss` and `sub`
+  of the approver.
+- `by.name`: optional, display only.
+- `at`: required. An RFC 3339 timestamp in UTC, ending in `Z`.
+- `note`: optional, at most 500 characters.
+
+The proxy checks the shape of these fields. It does not compare `at` with the
+clock, and an entry does not expire. The fields are claims written by the
+file's writer. They support audit; they do not authenticate the approval.
+
+## Request matching
+
+A create gets the grants of entry `W` when all of these are true:
+
+1. The base block sets `apply_workspace_exceptions: true`.
+2. The top-level `Labels` has the exact key `devcontainer.local_folder`, and
+   its value is byte-equal to `W`'s `workspace`. The value is not cleaned.
+3. The match-time workspace rules pass.
+4. Every host path the create mounts resolves inside `W` or inside one of
+   `W`'s `extraBindSources`: `HostConfig.Binds` sources, `HostConfig.Mounts`
+   binds, host-path `Config.Volumes` keys, overlay directories, and the bind
+   device and overlay directories of a `local` volume. The checks and the
+   symlink resolution are the ones the bind allowlist uses (see
+   [Symlink bind sources](/symlink-bind-sources)).
+5. At least one bind source resolves to `W` or inside it: the workspace
+   mount.
+
+| Case | Result |
+| --- | --- |
+| No `devcontainer.local_folder` label | No exception. The base policy decides. |
+| Label present, no entry has its value | No exception. The base policy decides. |
+| Label names an entry, and rule 3, 4 or 5 fails | No exception. The base policy decides. When the base policy denies, the deny reason ends with the cause, for example `workspace exception for "/srv/workspaces/alpha" not applied: a host path is outside the workspace and its extra bind sources (...)`. |
+| File invalid, label is a direct child of the root | No exception. A deny ends with `workspace exceptions unavailable: policy file invalid`. |
+| Matched | The base policy plus `W`'s grants. |
+
+A failed match removes grants. It never denies a request that the base policy
+admits.
+
+## Composition with the base policy
+
+- The base policy is the `request_body.container_create` block of the
+  client's profile, or the global block when the client has no profile.
+  Profiles replace the global block; they do not merge.
+- For a matched create, booleans are ORed and lists are unioned with the
+  grant.
+- Exceptions never change rules (method and path), the `require_*` hardening
+  settings other than `require_no_restart_policy`, resource limits,
+  `required_labels`, image trust, namespace-sharing restrictions, rollout
+  mode, rate and concurrency limits, response visibility, ownership, or any
+  endpoint other than container create.
+- The workspace mount itself is checked against `allowed_bind_mounts`, so the
+  workspace root must be in that list.
+
+## Restart policy
+
+`require_no_restart_policy: true` denies a create whose
+`HostConfig.RestartPolicy.Name` is anything but empty or `no`, with
+`container create denied: restart policy "<name>" is not allowed`.
+
+A container with a restart policy is started by the daemon itself, after a
+crash or a daemon or host restart. Such a start does not pass through the
+proxy, so the proxy's start-time bind re-check never sees it.
+
+A matched workspace's `restartPolicy` grant admits exactly the names it lists.
+A name not in the list is still denied, and a grant for one workspace does not
+admit a create for another. A granted policy lets the daemon start that
+workspace's containers without the start-time bind re-check, so the grant is
+a recorded acceptance of that bypass.
+
+The setting covers Docker-compat `POST /containers/create` only. Libpod create
+is not covered. `POST /containers/{id}/update` keeps its own
+`allow_restart_policy` gate, which exceptions do not open.
+
+## Reload
+
+The operator writes the file by atomic replace:
+
+1. Write the complete document to a temporary file in the same directory.
+2. `fsync` the file.
+3. `rename` it over the target.
+4. `fsync` the directory.
+
+Never write the target in place. Mount the directory, not the file, into the
+proxy container, read-only: a proxy that mounts the single file keeps the old
+inode and never sees a replacement.
+
+The proxy watches the file with its own watcher. It shares
+`reload.debounce`, `reload.poll_interval` and `SIGHUP` with the config
+reloader, and runs whether or not `reload.enabled` is set.
+
+- Each load reads the file, decodes and validates it, and swaps in a new
+  snapshot as one step.
+- A create takes the snapshot once, before it reads its body, and uses it for
+  matching and grants. A create in flight during a replace keeps the old
+  snapshot; a new create uses the new one.
+- A missing file means no exceptions. This is normal before the first entry
+  and is logged when the file goes missing, not on every reload. On a
+  filesystem that delivers inotify events, removing the file takes effect
+  after the debounce. The poll fallback does not see a removal; on a
+  filesystem that drops inotify events, send `SIGHUP` after removing the file.
+- An invalid file, at start-up or on reload, means no exceptions until a valid
+  file is loaded. The proxy does not keep the last valid file: a revocation
+  followed by a broken write must not leave the revoked grants in force. Each
+  invalid load gives an error log with the cause and a
+  `sockguard_workspace_exceptions_loads_total{result="invalid"}` count.
+- A revocation applies to later creates only. An existing container keeps its
+  settings until it is recreated.
+
+## Compose services
+
+Compose services are created through the same `POST /containers/create` and
+get an exception only under the same rules as any create: the exact label and
+bind-source agreement.
+
+- devcontainer-builder 0.2.0 sets `devcontainer.local_folder` only on the
+  primary service (read from `pkg/host/dockercompose/labels.go`,
+  `containerLabels`, and `up.go`, which merges a service's own labels under
+  the managed ones). A
+  non-primary service carries it only when the Compose file sets it under the
+  service's `labels:`. A service without the label gets no exception.
+- A labeled service matches only when its binds agree with that workspace,
+  like any create.
+- Compose configs and secrets are bind-mounted read-only from the staging
+  folder (devcontainer-builder `UserDataFolder`). That folder must be in
+  `allowed_bind_mounts` and must be at the same path for the daemon host and
+  for the client. A service that mounts a staged config or secret matches only
+  when the staging folder is in its entry's `extraBindSources`.
+- `restart:` goes through `require_no_restart_policy` and the `restartPolicy`
+  grant.
+- `extra_hosts` and `group_add` are always denied. Static network addresses
+  (`ipv4_address`, `ipv6_address`), `mac_address`, network driver options,
+  plugin network drivers and volume driver options are denied by their own
+  settings, which exceptions do not open.
+- Network create admits the built-in drivers `bridge`, `host`, `ipvlan`,
+  `macvlan` and `overlay`. No setting denies a built-in driver.
+
+## Logging and metrics
+
+Every create that carries the `devcontainer.local_folder` label, in a block
+with `apply_workspace_exceptions: true`, logs one `container create workspace
+exception` line with:
+
+- `workspace_exception`: `applied`, `none` or `not_applied:<cause>`;
+- `workspace` and `decision` (`allow` or `deny`);
+- for an applied exception, `approval_by_issuer`, `approval_by_subject` and
+  `approval_at`.
+
+| Cause | Meaning |
+| --- | --- |
+| `policy_file_invalid` | the file is invalid |
+| `workspace_unresolvable` | the workspace path cannot be resolved, for example it does not exist |
+| `workspace_not_canonical` | the workspace path has a symlink on it |
+| `workspace_not_directory` | the workspace path is not a directory |
+| `bind_source_outside_workspace` | a host path is outside the workspace and its extra bind sources |
+| `no_workspace_mount` | no bind source is the workspace or inside it |
+
+`sockguard_workspace_exceptions_loads_total{result}` counts loads of the file:
+`ok`, `missing` or `invalid`. The series is absent until the first load.
+
+## Deployment
+
+- The proxy resolves the workspace root, the workspaces and bind sources in
+  its own mount namespace. Mount the workspace root into the proxy read-only
+  at its host path, as [Symlink bind sources](/symlink-bind-sources) requires.
+- Use one canonical path for the `devcontainer.local_folder` label, the
+  workspace bind source and the entry's `workspace`: the resolved root plus
+  the folder name.
+- Keep a bind-type workspace mount. A create that mounts the workspace only
+  through a named volume does not match.
+- Containers that should never get an exception, such as command containers
+  for lifecycle hooks, must not carry the `devcontainer.local_folder` label.
+- Host paths outside the workspace that a devcontainer binds become
+  `extraBindSources`.
