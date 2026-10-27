@@ -115,6 +115,14 @@ func (h *wsHarness) inspect(opts ContainerCreateOptions, req wsCreate) string {
 	return reason
 }
 
+// with returns the harness bound to t, so a subtest reports its own
+// failures: a parent's FailNow from a subtest aborts the test binary.
+func (h *wsHarness) with(t *testing.T) *wsHarness {
+	c := *h
+	c.t = t
+	return &c
+}
+
 func (h *wsHarness) admit(opts ContainerCreateOptions, req wsCreate) {
 	h.t.Helper()
 	if reason := h.inspect(opts, req); reason != "" {
@@ -193,6 +201,7 @@ func TestWorkspaceExceptionForgedLabelBindsOutsideWorkspace(t *testing.T) {
 		"dot-dot out":            {[]string{h.f.alpha + "/../gamma:/other"}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			h := h.with(t)
 			req := wsRequest(h.f.alpha, map[string]any{"Privileged": true})
 			req.hostConfig["Binds"] = tc.binds
 			h.deny(h.options(nil), req, "privileged containers are not allowed", "workspace exception not applied")
@@ -262,6 +271,7 @@ func TestWorkspaceExceptionBindAgreementRules(t *testing.T) {
 		}(), "outside the workspace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			h := h.with(t)
 			h.deny(h.options(nil), tc.req, "privileged containers are not allowed", "not applied", tc.cause)
 		})
 	}
@@ -270,6 +280,7 @@ func TestWorkspaceExceptionBindAgreementRules(t *testing.T) {
 	// reason does not quote the header.
 	for name, ws := range map[string]string{"symlink": delta, "missing": filepath.Join(h.f.root, "epsilon"), "file": zeta} {
 		t.Run("header workspace "+name, func(t *testing.T) {
+			h := h.with(t)
 			reason := h.deny(h.options(nil), wsRequest(ws, nil), "the workspace header does not name a valid workspace")
 			if strings.Contains(reason, ws) {
 				t.Fatalf("reason quotes the header: %q", reason)
@@ -408,6 +419,7 @@ func TestWorkspaceExceptionLeavesOtherSettingsAlone(t *testing.T) {
 		"workspace root not allowlisted": {func(o *ContainerCreateOptions) { o.AllowedBindMounts = []string{h.f.outside} }, "is not allowlisted"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			h := h.with(t)
 			req := wsRequest(h.f.alpha, map[string]any{"Privileged": true})
 			h.admit(h.options(nil), req)
 			h.deny(h.options(tc.base), req, tc.want)

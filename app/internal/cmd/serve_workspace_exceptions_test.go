@@ -69,8 +69,10 @@ func (f serveWorkspaceFixture) config(socketPath string) config.Config {
 	cfg.Upstream.Socket = socketPath
 	cfg.WorkspaceExceptions = config.WorkspaceExceptionsConfig{File: f.file, WorkspaceRoot: f.root}
 	cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{f.root}
+	cfg.Response.DenyVerbosity = "verbose"
 	cfg.Rules = []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/start"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
 	return cfg
@@ -218,8 +220,10 @@ func TestServeChainAppliesWorkspaceExceptions(t *testing.T) {
 			for _, path := range []string{"/v1.51/containers/create", "/v1.51/containers/sample/start"} {
 				rec := httptest.NewRecorder()
 				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(f.createBody(f.alpha))))
-				if rec.Code != http.StatusForbidden {
-					t.Fatalf("%s without a workspace header: status %d, want 403", path, rec.Code)
+				// Deny verbosity is a global setting, so only the default
+				// block's response carries the reason.
+				if rec.Code != http.StatusForbidden || (name == "default block" && !strings.Contains(rec.Body.String(), "the request names no workspace")) {
+					t.Fatalf("%s without a workspace header: status %d body %s, want the workspace denial", path, rec.Code, rec.Body.String())
 				}
 			}
 

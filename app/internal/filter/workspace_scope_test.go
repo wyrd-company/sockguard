@@ -70,6 +70,7 @@ func TestWorkspaceScopeBindsStayInTheirOwnFolders(t *testing.T) {
 		"a not-yet-existing sibling's folder": filepath.Join(sockets, "delta") + ":/other",
 	} {
 		t.Run(name, func(t *testing.T) {
+			h := h.with(t)
 			if name == "a symlink in its folder to another" {
 				if err := os.Symlink(h.f.beta, filepath.Join(h.f.alpha, "to-beta")); err != nil {
 					t.Fatal(err)
@@ -96,6 +97,7 @@ func TestWorkspaceScopeCoversEveryHostPathField(t *testing.T) {
 		}}}}},
 	} {
 		t.Run(name, func(t *testing.T) {
+			h := h.with(t)
 			h.deny(opts, req, "outside this workspace's folder")
 		})
 	}
@@ -199,6 +201,7 @@ func TestWorkspaceScopeThrowawayLabel(t *testing.T) {
 		"missing folder": filepath.Join(h.f.root, "delta"),
 	} {
 		t.Run(name, func(t *testing.T) {
+			h := h.with(t)
 			for _, header := range []string{WorkspaceHeader, WorkspaceThrowawayHeader} {
 				req := scopedRequest(nil, h.f.outside+":/data")
 				req.headers = map[string][]string{header: {value}}
@@ -238,6 +241,7 @@ func TestWorkspaceLabelsAgreeWithHeader(t *testing.T) {
 	for _, label := range []string{WorkspaceLocalFolderLabel, WorkspaceThrowawayLabel} {
 		for name, value := range map[string]string{"another workspace": h.f.beta, "trailing slash": h.f.alpha + "/", "empty": ""} {
 			t.Run(label+" "+name, func(t *testing.T) {
+				h := h.with(t)
 				reason := h.deny(opts, withHeader(map[string]string{label: value}), "workspace label "+label+" disagrees with the request's workspace")
 				if value != "" && strings.Contains(reason, value) {
 					t.Fatalf("reason quotes a value: %q", reason)
@@ -264,6 +268,7 @@ func TestWorkspaceBothHeadersDenied(t *testing.T) {
 		"repeated throwaway": {WorkspaceThrowawayHeader: {h.f.alpha, h.f.beta}},
 	} {
 		t.Run(name, func(t *testing.T) {
+			h := h.with(t)
 			req := scopedRequest(nil, h.f.outside+":/data")
 			req.headers = headers
 			if reason := h.deny(opts, req, "the request names more than one workspace"); strings.Contains(reason, h.f.alpha) {
@@ -289,6 +294,7 @@ func TestWorkspaceHeaderlessCreateDenied(t *testing.T) {
 		"throwaway label only": scopedRequest(map[string]string{WorkspaceThrowawayLabel: h.f.alpha}, h.f.alpha+":/w"),
 	} {
 		t.Run(name, func(t *testing.T) {
+			h := h.with(t)
 			req.headers = map[string][]string{}
 			h.deny(opts, req, "the request names no workspace")
 		})
