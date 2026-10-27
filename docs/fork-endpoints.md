@@ -368,6 +368,16 @@ container, image, pod, network and volume lists
 owned set. A client value whose key is the owner label key (`key`,
 `key=value`, `key!=value`, with surrounding spaces) is dropped.
 
+For Docker's `GET /volumes` this holds for local volumes only. On a Swarm
+manager, at API 1.42 or later, dockerd also returns cluster volumes, and it
+lists them without applying the `filters` parameter, owner selector included
+(moby `api/server/router/volume/volume_routes.go` and
+`daemon/cluster/volumes.go`, read from source). Keeping client values does not
+widen that: the owner selector was never applied to cluster volumes. The
+Menagerie deployment does not support a Swarm manager behind the proxy;
+isolation for cluster volumes is backlog
+([wyrd-company/sockguard#3](https://github.com/wyrd-company/sockguard/issues/3)).
+
 Swarm lists (`/services`, `/tasks`, `/secrets`, `/configs`, `/nodes`), events
 and prune still drop every client `label` value. Swarm folds `label` into a map,
 so a client value that repeats the owner key could displace the owner selector;
@@ -468,6 +478,11 @@ container through the archive API, so the cache does not need an
   capabilities and mounts.
 - Relying on caller-supplied labels or list filters as isolation. Only the
   owner label isolates; client `label` values only narrow the owned set.
+- Putting the proxy in front of a Swarm manager. A manager returns cluster
+  volumes from `GET /volumes` without the owner selector (see
+  [Ownership and label lookups](#ownership-and-label-lookups)); this is
+  unsupported for Menagerie and tracked as
+  [wyrd-company/sockguard#3](https://github.com/wyrd-company/sockguard/issues/3).
 - Granting `/networks/**` or `/volumes/**` for Compose.
 - Compose templates that use `extra_hosts`, `group_add`, static network
   addresses, MAC addresses, network or volume driver options, plugin drivers,
