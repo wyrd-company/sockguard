@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fork: BuildKit Status may arrive before Solve.** Status waits for matching ref admission by the same trusted client identity and profile before any upstream read. It creates no ownership; denied admission and other identities/profiles cannot release it. Existing cancellation, session closure, stream/message bounds and Solve limits govern the wait. Original request frames are forwarded unchanged.
+
 - **Fork workspace grants require the primary label.** The trusted devcontainer header supplies workspace identity; matching `devcontainer.local_folder` is required grant eligibility for every create grant and inspected start/restart extra bind source. Unlabeled BASE operations remain allowed, including Compose sidecars with an own-workspace bind. Throwaway requests receive no grants.
 
 - **Fork release runs share one workflow concurrency group.** Tag and manual runs cannot overlap verification and image publication or cancel the running release. Each run fetches full history and current fork tags after admission, so an older run or rerun is refused even when the newer release ran first, and a late older build cannot move `latest` backwards.

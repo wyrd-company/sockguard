@@ -267,7 +267,7 @@ to have read or changed the daemon configuration.
 
 ## Build-path decision
 
-The fork adds two changes:
+The fork adds three changes:
 
 1. **An opt-in LLBBridge passthrough on `/grpc`.**
    `clients.profiles[].request_body.buildkit.llb_bridge.allow_uninspected_passthrough`,
@@ -279,6 +279,13 @@ The fork adds two changes:
 2. **A narrow exporter compatibility fix.** Control/Solve accepts the
    deprecated exporter fields only when they equal `Exporters[0]`, and rejects
    them otherwise.
+3. **Status before Solve admission.** A valid Control/Status waits until a
+   Solve passes every policy, session, ref and upload limit check and publishes
+   the same ref under the same trusted client identity and profile. Until then
+   no Status request reaches the daemon and no provisional ownership exists.
+   Another identity/profile, a denied Solve or a different ref cannot release
+   it. Request cancellation and tunnel/session closure end the wait. Existing
+   HTTP/2 concurrent-stream and message bounds apply; no new timeout is added.
 
 The operator reference is
 [BuildKit LLBBridge passthrough](content/docs/buildkit-llb-bridge.mdx).
