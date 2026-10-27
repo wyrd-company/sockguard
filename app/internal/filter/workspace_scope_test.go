@@ -166,6 +166,15 @@ func TestWorkspaceStoreForkStartRecheckScope(t *testing.T) {
 	if !slices.Equal(scope.Roots, []string{h.f.root, sockets}) || !slices.Equal(scope.Folders, []string{h.f.alpha, filepath.Join(sockets, "alpha")}) || !slices.Equal(scope.ExtraBindSources, []string{shared}) {
 		t.Fatalf("scope %+v", scope)
 	}
+	// Another workspace's entry does not lend its extras.
+	writeAtomic(t, h.f.file, mustJSON(t, workspaceDoc(
+		workspaceEntryDoc(h.f.alpha, map[string]any{"extraBindSources": []string{shared}}),
+		workspaceEntryDoc(h.f.beta, nil),
+	)))
+	h.store.Reload()
+	if scope, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: h.f.beta}); err != nil || len(scope.ExtraBindSources) != 0 {
+		t.Fatalf("beta scope %+v %v: want no extra bind sources", scope, err)
+	}
 	if scope, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: h.f.alpha, Throwaway: true}); err != nil || len(scope.ExtraBindSources) != 0 {
 		t.Fatalf("throwaway scope %+v %v: want no extra bind sources", scope, err)
 	}
@@ -439,4 +448,33 @@ func TestWorkspaceScopeHoldsWithAnInvalidFile(t *testing.T) {
 	alpha := map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}
 	h.admit(opts, scopedRequest(alpha, h.f.alpha+":/w", filepath.Join(sockets, "alpha")+":/run/s"))
 	h.deny(opts, scopedRequest(alpha, h.f.alpha+":/w", h.f.beta+":/other"), "outside this workspace's folder")
+}
+
+// DenyWorkspaceScopeReason is exported for callers other than create: a
+// throwaway identity drops any grant it is passed, and no identity drops
+// every per-workspace root.
+func TestDenyWorkspaceScopeReasonAPI(t *testing.T) {
+	h, sockets := newScopeHarness(t, nil)
+	shared := filepath.Join(sockets, "beta", "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snap := h.store.Load()
+	allowed := []string{h.f.root, sockets}
+	req := WorkspaceExceptionRequest{Binds: []string{h.f.alpha + ":/w", shared + ":/shared"}}
+	devcontainer := WorkspaceIdentity{Kind: WorkspaceIdentityDevcontainer, Workspace: h.f.alpha}
+	throwaway := WorkspaceIdentity{Kind: WorkspaceIdentityThrowaway, Workspace: h.f.alpha}
+	if reason := DenyWorkspaceScopeReason(snap, devcontainer, req, allowed, []string{shared}); reason != "" {
+		t.Fatalf("devcontainer with the grant: %q", reason)
+	}
+	if reason := DenyWorkspaceScopeReason(snap, devcontainer, req, allowed, nil); reason == "" {
+		t.Fatal("devcontainer without the grant must be denied")
+	}
+	if reason := DenyWorkspaceScopeReason(snap, throwaway, req, allowed, []string{shared}); reason == "" {
+		t.Fatal("a throwaway identity must not use a grant it is passed")
+	}
+	own := WorkspaceExceptionRequest{Binds: []string{h.f.alpha + ":/w"}}
+	if reason := DenyWorkspaceScopeReason(snap, WorkspaceIdentity{Kind: WorkspaceIdentityNone}, own, allowed, nil); !strings.Contains(reason, "needs a workspace") {
+		t.Fatalf("no identity: %q", reason)
+	}
 }
