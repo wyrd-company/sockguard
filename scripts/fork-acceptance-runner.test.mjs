@@ -85,17 +85,23 @@ case "$*" in
  *) echo "unexpected Docker call $*" >&2; exit 93 ;;
 esac`,
     );
-    const result = spawnSync("bash", [join(root, "tests/acceptance/run.sh")], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${join(root, "bin")}:${process.env.PATH}`,
-        FIXTURE_ROOT: root,
-        FAULT: fault,
-        ACCEPTANCE_INHERITED_LOCKS: fault === "inherited" ? "1" : "",
-        ACCEPTANCE_EVIDENCE_ROOT: root,
+    // The negative must lack descriptors even when npm inherits the real
+    // gate owner's locks. Close only this child process's descriptor copies.
+    const result = spawnSync(
+      "bash",
+      ["-c", 'exec 200>&- 201>&-; exec bash "$1"', "--", join(root, "tests/acceptance/run.sh")],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${join(root, "bin")}:${process.env.PATH}`,
+          FIXTURE_ROOT: root,
+          FAULT: fault,
+          ACCEPTANCE_INHERITED_LOCKS: fault === "inherited" ? "1" : "",
+          ACCEPTANCE_EVIDENCE_ROOT: root,
+        },
       },
-    });
+    );
     return {
       ...result,
       calls: existsSync(join(root, "docker.calls"))
