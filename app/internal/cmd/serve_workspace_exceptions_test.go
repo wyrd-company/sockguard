@@ -1,13 +1,19 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -246,4 +252,91 @@ func TestWatchWorkspaceExceptionsReloadsOnStart(t *testing.T) {
 	if stopNil := (*serveRuntime)(nil).watchWorkspaceExceptions(ctx, &cfg, newDiscardLogger()); stopNil == nil {
 		t.Fatal("nil runtime must return a stop func")
 	}
+}
+
+// runServeWithDeps loads the store before serving and fails start-up on a
+// root that is not canonical, and it starts the file watcher.
+func TestRunServeWorkspaceExceptionsStartup(t *testing.T) {
+	f := newServeWorkspaceFixture(t)
+	newDeps := func(edit func(*config.Config), logs *syncBuffer) *serveDeps {
+		deps := newServeTestDeps()
+		deps.loadConfig = func(string) (*config.Config, error) {
+			cfg := testServeConfig()
+			cfg.Listen.Socket = "/tmp/sockguard-test.sock"
+			cfg.Listen.Address = ""
+			cfg.WorkspaceExceptions = config.WorkspaceExceptionsConfig{File: f.file, WorkspaceRoot: f.root}
+			if edit != nil {
+				edit(cfg)
+			}
+			return cfg, nil
+		}
+		deps.newLogger = func(string, string, string) (*slog.Logger, io.Closer, error) {
+			return slog.New(slog.NewTextHandler(logs, nil)), nil, nil
+		}
+		deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) { return stubCompiledRules(), nil }
+		deps.dialUpstream = func(string, string, time.Duration) (net.Conn, error) { return &serveTestConn{}, nil }
+		deps.createServeListener = func(*config.Config) (net.Listener, error) { return &serveTestListener{}, nil }
+		deps.notifySignals = func(chan<- os.Signal, ...os.Signal) {}
+		deps.shutdownServer = func(*http.Server, context.Context) error { return nil }
+		deps.removePath = func(string) error { return nil }
+		return deps
+	}
+
+	t.Run("root not canonical", func(t *testing.T) {
+		link := filepath.Join(filepath.Dir(f.root), "startup-rootlink")
+		if err := os.Symlink(f.root, link); err != nil {
+			t.Fatal(err)
+		}
+		deps := newDeps(func(c *config.Config) { c.WorkspaceExceptions.WorkspaceRoot = link }, &syncBuffer{})
+		served := false
+		deps.startServing = func(*http.Server, net.Listener, chan<- error) { served = true }
+		err := runServeWithDeps(newServeCommand(), nil, deps)
+		if err == nil || !strings.Contains(err.Error(), "workspace exceptions:") || !strings.Contains(err.Error(), "not canonical") {
+			t.Fatalf("runServeWithDeps() = %v, want a workspace exceptions start-up error", err)
+		}
+		if served {
+			t.Fatal("the proxy must not serve with a non-canonical workspace root")
+		}
+	})
+
+	t.Run("watcher started", func(t *testing.T) {
+		f.write(t, true)
+		logs := &syncBuffer{}
+		deps := newDeps(nil, logs)
+		deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {
+			go func() {
+				// The start-up load logs once; the watcher's first reload
+				// logs again. 5s bounds a loaded shared host.
+				deadline := time.Now().Add(5 * time.Second)
+				for strings.Count(logs.String(), "workspace exceptions loaded") < 2 && time.Now().Before(deadline) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				errCh <- errors.New("stop")
+			}()
+		}
+		if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "stop") {
+			t.Fatalf("runServeWithDeps() = %v", err)
+		}
+		if got := strings.Count(logs.String(), "workspace exceptions loaded"); got < 2 {
+			t.Fatalf("watcher did not reload the file after start-up (%d loads logged)", got)
+		}
+	})
+}
+
+// syncBuffer is a bytes.Buffer safe for the logger and the test to share.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

@@ -174,8 +174,13 @@ func TestWorkspaceExceptionBindAgreementRules(t *testing.T) {
 			workspaceEntryDoc(f.alpha, map[string]any{"privileged": true}),
 			workspaceEntryDoc(filepath.Join(f.root, "delta"), map[string]any{"privileged": true}),
 			workspaceEntryDoc(filepath.Join(f.root, "epsilon"), map[string]any{"privileged": true}),
+			workspaceEntryDoc(filepath.Join(f.root, "zeta"), map[string]any{"privileged": true}),
 		}
 	})
+	zeta := filepath.Join(h.f.root, "zeta")
+	if err := os.WriteFile(zeta, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(h.f.outside, filepath.Join(h.f.alpha, "link-out")); err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +206,7 @@ func TestWorkspaceExceptionBindAgreementRules(t *testing.T) {
 		}(), "no bind source is the workspace"},
 		{"workspace is a symlink", wsRequest(delta, privileged), "the workspace resolves to"},
 		{"workspace missing", wsRequest(filepath.Join(h.f.root, "epsilon"), privileged), "cannot be resolved"},
+		{"workspace is a file", wsRequest(zeta, privileged), "is not a directory"},
 		{"mounts bind outside", func() wsCreate {
 			r := wsRequest(h.f.alpha, privileged)
 			r.hostConfig["Mounts"] = []map[string]any{{"Type": "bind", "Source": h.f.outside, "Target": "/data"}}
