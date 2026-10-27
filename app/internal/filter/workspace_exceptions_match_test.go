@@ -170,7 +170,10 @@ func TestWorkspaceExceptionDoesNotCrossWorkspaces(t *testing.T) {
 	// beta's label on a request that mounts alpha.
 	forged := wsRequest(h.f.alpha, privileged)
 	forged.labels[WorkspaceLocalFolderLabel] = h.f.beta
-	h.deny(h.options(nil), forged, "workspace exception not applied", "outside the workspace")
+	// The detail never quotes the header's workspace.
+	if reason := h.deny(h.options(nil), forged, "workspace exception not applied", "outside the workspace"); strings.Contains(reason, h.f.beta) {
+		t.Fatalf("deny reason quotes the header: %q", reason)
+	}
 	h.admit(h.options(nil), wsRequest(h.f.beta, privileged))
 }
 
