@@ -623,3 +623,59 @@ func TestForkStartRecheckIsTheOnlyStartInspector(t *testing.T) {
 		}
 	}
 }
+
+// TestForkStartRecheckTarget pins the path parser on inputs the middleware's
+// path normalization never hands it, such as an empty identifier.
+func TestForkStartRecheckTarget(t *testing.T) {
+	for _, tt := range []struct {
+		path, id, subject string
+		ok                bool
+	}{
+		{path: "/containers/c1/start", id: "c1", subject: "container start", ok: true},
+		{path: "/libpod/containers/c1/restart", id: "c1", subject: "libpod container restart", ok: true},
+		{path: "/containers//start"},
+		{path: "/containers//restart"},
+		{path: "/libpod/containers//start"},
+	} {
+		id, subject, ok := forkStartRecheckTarget(tt.path)
+		if id != tt.id || subject != tt.subject || ok != tt.ok {
+			t.Errorf("forkStartRecheckTarget(%q) = (%q, %q, %v), want (%q, %q, %v)", tt.path, id, subject, ok, tt.id, tt.subject, tt.ok)
+		}
+	}
+}
+
+// TestForkStartRecheckInspectsOnlyPost calls the inspector directly with a
+// method the middleware's per-method dispatch never hands it.
+func TestForkStartRecheckInspectsOnlyPost(t *testing.T) {
+	f := newForkStartRecheckFixture(t)
+	f.daemon.set(http.StatusInternalServerError, `{}`)
+	policy := newForkStartRecheckPolicy(f.policy([]string{f.ws}, nil))
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+		if reason, err := policy.inspect(nil, httptest.NewRequest(method, "/containers/c1/start", nil), "/containers/c1/start"); reason != "" || err != nil {
+			t.Errorf("%s: inspect = (%q, %v), want no denial", method, reason, err)
+		}
+	}
+	if got := f.daemon.inspects(); len(got) != 0 {
+		t.Errorf("daemon saw %q, want no inspect", got)
+	}
+}
+
+// TestForkStartRecheckNormalizesAllowlistEntries checks that entries are
+// cleaned the way the create check cleans them: an entry with a trailing
+// slash or a ".." still holds the sources under it, and a relative one holds
+// nothing.
+func TestForkStartRecheckNormalizesAllowlistEntries(t *testing.T) {
+	for _, entries := range [][]string{{"WS/"}, {"WS/./"}, {"WS/up/.."}} {
+		f := newForkStartRecheckFixture(t)
+		allowed := make([]string, 0, len(entries)+1)
+		for _, entry := range entries {
+			allowed = append(allowed, strings.Replace(entry, "WS", f.ws, 1))
+		}
+		allowed = append(allowed, "relative/path")
+		proj := filepath.Join(f.ws, "proj")
+		f.daemon.set(http.StatusOK, inspectBody(t, []ForkStartRecheckMount{bindMount(proj)}, nil, nil))
+		f.swap("proj", f.outside)
+		assertDenied(t, send(t, f.policy(allowed, nil), http.MethodPost, "/containers/c1/start", ""), "container_start_bind_source_denied",
+			`container start denied: bind mount source "`+proj+`" resolves to "`+f.outside+`", which is not allowlisted`)
+	}
+}
