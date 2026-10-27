@@ -58,9 +58,12 @@ func TestNetworkInspectorReportsNotFound(t *testing.T) {
 	}
 }
 
+// TestNetworkInspectorFailsOnServerError: the body is a valid answer, so only
+// the status check can fail the lookup.
 func TestNetworkInspectorFailsOnServerError(t *testing.T) {
 	inspect, _ := newNetworkInspectTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"Driver":"bridge"}`))
 	})
 	if _, _, err := inspect(context.Background(), "x"); err == nil {
 		t.Fatal("inspect error = nil, want an error for a 500")
