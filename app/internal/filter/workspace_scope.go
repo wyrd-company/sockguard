@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"errors"
 	"path"
 	"slices"
 	"strings"
@@ -191,6 +192,21 @@ func DenyWorkspaceScopeReason(snap *WorkspaceExceptionSnapshot, id WorkspaceIden
 	folder := ""
 	if id.Kind != WorkspaceIdentityNone {
 		folder = path.Base(id.Workspace)
+		// The bind checks resolve allowlist entries. A workspace folder that
+		// is a symlink, into another workspace's folder say, would carry the
+		// sources under it along, so it is refused instead.
+		for _, root := range roots {
+			own := path.Join(root, folder)
+			if resolved, err := resolveBindSource(own); err != nil || resolved != own {
+				return "container create denied: this workspace's folder under a per-workspace root is not a canonical directory"
+			}
+		}
+	}
+	// Extra bind sources are an exception: only a devcontainer identity
+	// gets them.
+	var extras []string
+	if id.Kind == WorkspaceIdentityDevcontainer {
+		extras = snap.extraBindSourcesFor(id.Workspace)
 	}
 	normalized := make([]string, 0, len(allowedBindMounts))
 	for _, entry := range allowedBindMounts {
@@ -199,7 +215,7 @@ func DenyWorkspaceScopeReason(snap *WorkspaceExceptionSnapshot, id WorkspaceIden
 		}
 	}
 	scoped := containerCreatePolicy{
-		allowedBindMounts: workspaceScopedAllowlist(normalized, roots, folder, snap.extraBindSourcesFor(id.Workspace)),
+		allowedBindMounts: workspaceScopedAllowlist(normalized, roots, folder, extras),
 	}
 	hostConfig, volumes := req.containerCreateShape()
 	reason := scoped.denyBindMountReason(hostConfig)
@@ -214,4 +230,27 @@ func DenyWorkspaceScopeReason(snap *WorkspaceExceptionSnapshot, id WorkspaceIden
 		return "container create denied: a host path under a per-workspace root needs a workspace label (" + detail + ")"
 	}
 	return "container create denied: a host path under a per-workspace root is outside this workspace's folder (" + detail + ")"
+}
+
+// ForkStartRecheckWorkspace validates w against the current snapshot and
+// returns its scope for the start re-check: the per-workspace roots, W's
+// folder under each, and W's extra bind sources (none for a throwaway
+// workspace). W must be a workspace key and a canonical directory.
+func (s *WorkspaceExceptionStore) ForkStartRecheckWorkspace(w ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error) {
+	snap := s.Load()
+	if err := checkWorkspaceKey(w.Path, snap.workspaceRoot()); err != nil {
+		return ForkStartRecheckWorkspaceScope{}, err
+	}
+	if cause, detail := checkWorkspaceFolder(w.Path); cause != "" {
+		return ForkStartRecheckWorkspaceScope{}, errors.New(detail)
+	}
+	roots := slices.Clone(snap.perWorkspaceRoots())
+	scope := ForkStartRecheckWorkspaceScope{Roots: roots}
+	for _, root := range roots {
+		scope.Folders = append(scope.Folders, path.Join(root, path.Base(w.Path)))
+	}
+	if !w.Throwaway {
+		scope.ExtraBindSources = slices.Clone(snap.extraBindSourcesFor(w.Path))
+	}
+	return scope, nil
 }

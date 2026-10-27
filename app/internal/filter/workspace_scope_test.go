@@ -111,10 +111,10 @@ func TestWorkspaceScopeExtraBindSources(t *testing.T) {
 	h.admit(opts, scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}, h.f.alpha+":/w", shared+":/shared"))
 	// The grant is alpha's: gamma may not use it.
 	h.deny(opts, scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.gamma}, h.f.gamma+":/w", shared+":/shared"), "outside this workspace's folder")
-	// A throwaway request is scoped by alpha's extras too, but they do not
-	// widen its allowlist: an extra outside the base allowlist stays denied.
+	// Extra bind sources are an exception, so a throwaway identity for alpha
+	// gets none: neither under a root nor elsewhere.
 	throwaway := map[string]string{WorkspaceThrowawayLabel: h.f.alpha}
-	h.admit(opts, scopedRequest(throwaway, shared+":/shared"))
+	h.deny(opts, scopedRequest(throwaway, shared+":/shared"), "outside this workspace's folder")
 	extra := filepath.Join(h.f.base, "extra")
 	if err := os.MkdirAll(extra, 0o755); err != nil {
 		t.Fatal(err)
@@ -123,6 +123,55 @@ func TestWorkspaceScopeExtraBindSources(t *testing.T) {
 	h.store.Reload()
 	h.admit(opts, scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}, h.f.alpha+":/w", extra+":/extra"))
 	h.deny(opts, scopedRequest(throwaway, extra+":/extra"), "is not allowlisted")
+}
+
+// A workspace folder under a per-workspace root that is a symlink, into
+// another workspace's folder say, refuses the request: the bind checks would
+// otherwise follow it.
+func TestWorkspaceScopeFolderMustBeCanonical(t *testing.T) {
+	h, sockets := newScopeHarness(t, nil)
+	alphaSockets := filepath.Join(sockets, "alpha")
+	if err := os.Remove(alphaSockets); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(sockets, "beta"), alphaSockets); err != nil {
+		t.Fatal(err)
+	}
+	opts := h.scopeOptions(sockets, nil)
+	for _, labels := range []map[string]string{{WorkspaceLocalFolderLabel: h.f.alpha}, {WorkspaceThrowawayLabel: h.f.alpha}} {
+		h.deny(opts, scopedRequest(labels, alphaSockets+"/x:/run/x"), "not a canonical directory")
+		h.deny(opts, scopedRequest(labels, h.f.outside+":/data"), "not a canonical directory")
+	}
+	// A folder that does not exist yet is fine: gamma has a socket folder,
+	// a new workspace may not.
+	if err := os.MkdirAll(filepath.Join(h.f.root, "delta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.admit(opts, scopedRequest(map[string]string{WorkspaceLocalFolderLabel: filepath.Join(h.f.root, "delta")}, filepath.Join(sockets, "delta")+":/run/s"))
+}
+
+func TestWorkspaceStoreForkStartRecheckScope(t *testing.T) {
+	h, sockets := newScopeHarness(t, nil)
+	shared := filepath.Join(h.f.outside, "shared")
+	writeAtomic(t, h.f.file, mustJSON(t, workspaceDoc(workspaceEntryDoc(h.f.alpha, map[string]any{"extraBindSources": []string{shared}}))))
+	h.store.Reload()
+	scope, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: h.f.alpha})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(scope.Roots, []string{h.f.root, sockets}) || !slices.Equal(scope.Folders, []string{h.f.alpha, filepath.Join(sockets, "alpha")}) || !slices.Equal(scope.ExtraBindSources, []string{shared}) {
+		t.Fatalf("scope %+v", scope)
+	}
+	if scope, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: h.f.alpha, Throwaway: true}); err != nil || len(scope.ExtraBindSources) != 0 {
+		t.Fatalf("throwaway scope %+v %v: want no extra bind sources", scope, err)
+	}
+	for _, bad := range []string{"", h.f.alpha + "/", h.f.outside, filepath.Join(h.f.root, "missing")} {
+		if _, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: bad}); err == nil {
+			t.Fatalf("workspace %q must be refused", bad)
+		}
+	}
+	// The scope function plugs into the start re-check policy's options.
+	var _ ForkStartRecheckWorkspaceFunc = h.store.ForkStartRecheckWorkspace
 }
 
 // The throwaway label scopes binds like devcontainer.local_folder and never
