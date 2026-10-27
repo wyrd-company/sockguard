@@ -8,10 +8,20 @@ if [[ "$(git rev-parse --show-toplevel)" != "$repo_root" ]]; then
   echo 'acceptance: wrong Git checkout' >&2
   exit 1
 fi
-exec 200>/tmp/menagerie-sockguard-heavy-gate.lock
-flock 200
-exec 201>/tmp/sockguard-gate.lock
-flock 201
+if [[ "${ACCEPTANCE_INHERITED_LOCKS:-}" == 1 ]]; then
+  if [[ ! /proc/$$/fd/200 -ef /tmp/menagerie-sockguard-heavy-gate.lock ||
+        ! /proc/$$/fd/201 -ef /tmp/sockguard-gate.lock ]]; then
+    echo 'acceptance: inherited lock descriptors missing or wrong' >&2
+    exit 1
+  fi
+  flock -n 200
+  flock -n 201
+else
+  exec 200>/tmp/menagerie-sockguard-heavy-gate.lock
+  flock 200
+  exec 201>/tmp/sockguard-gate.lock
+  flock 201
+fi
 uptime
 mode=full
 if (( $# > 0 )); then mode=partial; fi
@@ -23,6 +33,15 @@ mkdir -p "$scratch/docker-config" "$scratch/tmp"
 export DOCKER_CONFIG="$scratch/docker-config" TMPDIR="$scratch/tmp" GOFLAGS=-count=1
 source_head="$(git rev-parse HEAD)"
 source_tree="$(git rev-parse 'HEAD^{tree}')"
+source_base="$(git merge-base HEAD epic/menagerie-proxy 2>/dev/null || git merge-base HEAD origin/epic/menagerie-proxy 2>/dev/null || git rev-parse HEAD)"
+git status --porcelain=v1 > "$scratch/source-status.before"
+git diff --binary HEAD > "$scratch/source-diff.before"
+shared_snapshot() {
+  docker container ls -aq --no-trunc | sort
+  docker image ls -aq --no-trunc | sort -u
+  docker volume ls -q | sort
+}
+shared_snapshot > "$scratch/shared.before"
 store="${ACCEPTANCE_STORE:-containerd}"
 case "$store" in
   classic) feature=false ;;
@@ -44,7 +63,20 @@ cleanup() {
   fi
   if [[ -n "$daemon_id" ]]; then docker logs "$daemon_id" > "$scratch/daemon.log" 2>&1 || true; docker rm -f -v "$daemon_id" || rc=1; fi
   for owned_volume in "${created_volumes[@]}"; do docker volume rm "$owned_volume" || rc=1; done
-  echo "ACCEPTANCE_OUTER_TERMINAL=$rc HEAD=$source_head TREE=$source_tree STORE=$store MODE=$mode EVIDENCE=$scratch"
+  shared_snapshot > "$scratch/shared.after" || rc=1
+  if ! cmp "$scratch/shared.before" "$scratch/shared.after"; then
+    echo 'acceptance: shared resource inventory changed' >&2
+    rc=1
+  fi
+  git status --porcelain=v1 > "$scratch/source-status.after"
+  git diff --binary HEAD > "$scratch/source-diff.after"
+  if [[ "$(git rev-parse HEAD)" != "$source_head" ]] ||
+     ! cmp "$scratch/source-status.before" "$scratch/source-status.after" ||
+     ! cmp "$scratch/source-diff.before" "$scratch/source-diff.after"; then
+    echo 'acceptance: source changed during execution' >&2
+    rc=1
+  fi
+  echo "ACCEPTANCE_OUTER_TERMINAL=$rc HEAD=$source_head TREE=$source_tree BASE=$source_base STORE=$store MODE=$mode EVIDENCE=$scratch"
   exit "$rc"
 }
 trap cleanup EXIT
@@ -56,6 +88,7 @@ df -h "$scratch"
 build_tags="${ACCEPTANCE_BUILD_TAGS:-sockguardacceptance}"
 case "$build_tags" in sockguardacceptance|sockguardacceptance,sockguardbuildrepro) ;; *) echo 'unsupported acceptance build tags' >&2; exit 1 ;; esac
 (cd tests/acceptance && CGO_ENABLED=0 GOOS=linux go test -mod=readonly -tags="$build_tags" -c -o "$scratch/acceptance.test" .)
+sha256sum "$scratch/acceptance.test"
 # Refuse an empty compiled suite before acquiring daemon resources.
 if ! ACCEPTANCE_REQUIRED=1 "$scratch/acceptance.test" -test.list '^TestAcceptance$' | grep -qx TestAcceptance; then
   echo 'acceptance: compiled binary has no required suite' >&2
