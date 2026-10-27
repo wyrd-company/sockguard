@@ -21,6 +21,10 @@ directory read-only and never writes the file.
   Their own settings apply.
 - An exception only opens gates. It never closes a gate that the base policy
   opens.
+- In a block with `apply_workspace_exceptions`, every create also has its
+  binds under a per-workspace root scoped to its own workspace. See
+  [Per-workspace roots](#per-workspace-roots). This is the one rule of the
+  feature that denies a request the base policy admits.
 
 ## Configuration
 
@@ -28,12 +32,13 @@ directory read-only and never writes the file.
 workspace_exceptions:
   file: /etc/sockguard/exceptions/workspace-exceptions.json
   workspace_root: /srv/workspaces
+  per_workspace_roots: ["/srv/workspaces", "/srv/workspace-sockets"]
 clients:
   profiles:
     - name: menagerie
       request_body:
         container_create:
-          allowed_bind_mounts: ["/srv/workspaces"]
+          allowed_bind_mounts: ["/srv/workspaces", "/srv/workspace-sockets", "/srv/template-cache"]
           apply_workspace_exceptions: true
           require_no_restart_policy: true
 ```
@@ -42,14 +47,16 @@ clients:
 | --- | --- | --- | --- |
 | `workspace_exceptions.file` | `SOCKGUARD_WORKSPACE_EXCEPTIONS_FILE` | empty | Absolute path of the exceptions file. Empty turns the feature off. |
 | `workspace_exceptions.workspace_root` | `SOCKGUARD_WORKSPACE_EXCEPTIONS_WORKSPACE_ROOT` | empty | Absolute path of the folder whose direct children are workspaces. Required when `file` is set. |
+| `workspace_exceptions.per_workspace_roots` | `SOCKGUARD_WORKSPACE_EXCEPTIONS_PER_WORKSPACE_ROOTS` | `[workspace_root]` | Folders whose direct children each belong to one workspace, by folder name. When set, it must include `workspace_root`. See [Per-workspace roots](#per-workspace-roots). |
 | `request_body.container_create.apply_workspace_exceptions` | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_APPLY_WORKSPACE_EXCEPTIONS` | `false` | The block opts in to the exceptions file. Also valid in `clients.profiles[].request_body.container_create`. Requires `workspace_exceptions.file`. |
 | `request_body.container_create.require_no_restart_policy` | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_NO_RESTART_POLICY` | `false` | Denies a restart policy on create. See [Restart policy](#restart-policy). Also valid in a profile's block. Needs no exceptions file. |
 
-- Both `workspace_exceptions` keys are fixed at start-up. A config reload that
-  changes either one is refused, and the change needs a restart.
-- At start-up the proxy resolves `workspace_root` in its own mount namespace.
-  If the root does not resolve to itself (`filepath.EvalSymlinks(root) ==
-  root`), start-up fails.
+- The `workspace_exceptions` keys are fixed at start-up. A config reload that
+  changes one is refused, and the change needs a restart.
+- At start-up the proxy resolves `workspace_root` and every per-workspace root
+  in its own mount namespace. If one does not resolve to itself
+  (`filepath.EvalSymlinks(root) == root`), start-up fails. Per-workspace
+  roots may not repeat or sit inside one another.
 - Without `workspace_exceptions.file` the proxy behaves exactly as without
   this feature.
 
@@ -187,7 +194,55 @@ A create gets the grants of entry `W` when all of these are true:
 | Matched | The base policy plus `W`'s grants. |
 
 A failed match removes grants. It never denies a request that the base policy
-admits.
+admits; [per-workspace roots](#per-workspace-roots) are a separate rule that
+can.
+
+## Per-workspace roots
+
+In a block with `apply_workspace_exceptions: true`, every Docker-compat
+create, matched or not, has its host paths scoped by workspace. Each
+per-workspace root's direct children belong to one workspace each, by folder
+name: `/srv/workspaces/alpha` and `/srv/workspace-sockets/alpha` both belong
+to workspace `/srv/workspaces/alpha`.
+
+The request's workspace `W` comes from one label:
+
+| Labels on the request | Workspace | Exceptions |
+| --- | --- | --- |
+| `devcontainer.local_folder` only, a workspace key (an absolute, clean, direct child of `workspace_root`) | its value | matched as described above |
+| `devcontainer.local_folder` only, any other value | none | none |
+| `menagerie.throwaway.workspace` only | its value, which must be a workspace key and a canonical directory, or the request is denied | never, whatever the file grants |
+| both | the request is denied | none |
+| neither | none | none |
+
+A host path under a per-workspace root `R` must then be inside
+`R/<basename W>` or inside one of `W`'s `extraBindSources`. A request with no
+workspace may not mount anything under a per-workspace root. Host paths
+outside every per-workspace root, such as a template cache folder or a
+Compose staging folder, follow the base allowlist as before.
+
+- The host paths are the ones the bind allowlist checks: `HostConfig.Binds`
+  sources, `HostConfig.Mounts` binds, host-path `Config.Volumes` keys,
+  overlay directories, and the bind device and overlay directories of a
+  `local` volume. They are resolved as [Symlink bind sources](/symlink-bind-sources)
+  describes, so a `..`, a symlink, or a directory that a source would create
+  cannot reach another workspace's folder.
+- Allowlist entries are judged by where they resolve. An entry that is a
+  symlink into another workspace's folder does not let a request reach that
+  folder.
+- In a block with `apply_workspace_exceptions`, an `allowed_bind_mounts` entry
+  that contains a per-workspace root (`/srv`, `/`) is a validation error:
+  scoping narrows an entry at or under a root to the request's folder, and an
+  entry above a root cannot be narrowed that way. List the roots and the
+  folders beside them instead.
+- A throwaway request uses `W`'s `extraBindSources` for scoping only. They do
+  not widen its allowlist.
+- The deny reasons name the cause and do not repeat the label values:
+  `labels devcontainer.local_folder and menagerie.throwaway.workspace cannot both be set`,
+  `label menagerie.throwaway.workspace does not name a workspace under the workspace root`,
+  `a host path under a per-workspace root needs a workspace label (...)`,
+  `a host path under a per-workspace root is outside this workspace's folder (...)`.
+- A block without `apply_workspace_exceptions` is not scoped.
 
 ## Composition with the base policy
 
@@ -321,6 +376,8 @@ exception` line with:
 - Keep a bind-type workspace mount. A create that mounts the workspace only
   through a named volume does not match.
 - Containers that should never get an exception, such as command containers
-  for lifecycle hooks, must not carry the `devcontainer.local_folder` label.
+  for lifecycle hooks, carry `menagerie.throwaway.workspace` with their
+  workspace and no `devcontainer.local_folder` label. Their binds are scoped
+  to that workspace.
 - Host paths outside the workspace that a devcontainer binds become
   `extraBindSources`.
