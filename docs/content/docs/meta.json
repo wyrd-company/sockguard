@@ -15,6 +15,7 @@
     "roadmap",
     "security",
     "symlink-bind-sources",
-    "verification"
+    "verification",
+    "workspace-exceptions"
   ]
 }

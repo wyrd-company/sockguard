@@ -171,8 +171,9 @@ An inspect failure fails closed. Its cause is logged at warning level.
   daemon's mount.
 - **Starts that do not pass through the proxy.** A restart the daemon does by
   itself under a restart policy, and the starts after a daemon or host reboot,
-  are not checked. A restart-policy setting controls whether a create request
-  may set one.
+  are not checked. `require_no_restart_policy` controls whether a create
+  request may set one; see
+  [Workspace exceptions](/workspace-exceptions#restart-policy).
 - **A compromised client that can write every component below the
   allowlisted root.** It can replace any component under the root at any
   time, so neither check binds it. In a Menagerie deployment, this client is
