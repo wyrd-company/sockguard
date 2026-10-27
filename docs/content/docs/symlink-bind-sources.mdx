@@ -87,9 +87,27 @@ services:
       - /srv/workspaces:/srv/workspaces:ro
 ```
 
-When the proxy cannot see a path, the source resolves to itself (the
-missing-path rule above) and only the string check applies. No error is
-logged. The proxy image runs as UID 65532 with no capabilities, so every
+At startup, the proxy checks every `allowed_bind_mounts` entry in
+`request_body.container_create` (also used by volume create) and
+`request_body.libpod_container_create`, in the base config and every client
+profile. A missing entry logs one warning per entry per block, naming the
+block and path. An existing file, such as a socket, is valid. A permission
+error has a distinct message at the same severity. Other lookup failures
+are reported separately. Service and plugin roots are not checked here.
+
+In a Docker `container_create` block with `apply_workspace_exceptions: true`,
+a missing or inaccessible allowlist entry is an ERROR and startup fails.
+When `workspace_exceptions.file` is set, `workspace_root` and every
+`per_workspace_roots` entry must also be existing canonical directories.
+Missing, inaccessible or non-directory workspace roots stop startup. Each
+visibility failure names the path and says: `mount it read-only at the same path`.
+The same checks run on config reload: an ERROR rejects the replacement and
+preserves the running config and policy generation. Warning-only blocks keep
+warning behavior and permit the reload.
+
+When a warning-only block cannot see a path, the source resolves to itself
+(the missing-path rule above) and only the string check applies. The proxy
+image runs as UID 65532 with no capabilities, so every
 directory on the way to a source needs search (`x`) permission for that user.
 Without it the request is denied with `permission denied`.
 

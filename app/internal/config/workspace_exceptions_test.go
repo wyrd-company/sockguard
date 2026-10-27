@@ -138,7 +138,7 @@ func TestValidateWorkspaceExceptions(t *testing.T) {
 		t.Fatalf("entry above a root without apply: %v", err)
 	}
 	cfg.RequestBody.ContainerCreate.ApplyWorkspaceExceptions = true
-	cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{"/srv/workspaces", "/srv/workspace-sockets", "/srv/template-cache"}
+	cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{"/srv/workspaces", "/srv/workspace-sockets", "/srv/shared-input"}
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("roots and a sibling folder: %v", err)
 	}

@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"path"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -185,10 +184,7 @@ func NewWorkspaceExceptionStore(opts WorkspaceExceptionStoreOptions) (*Workspace
 	if !path.IsAbs(opts.Path) {
 		return nil, fmt.Errorf("workspace exceptions file %q is not an absolute path", opts.Path)
 	}
-	if err := checkWorkspaceRoot(opts.WorkspaceRoot); err != nil {
-		return nil, err
-	}
-	roots, err := checkPerWorkspaceRoots(opts.WorkspaceRoot, opts.PerWorkspaceRoots)
+	roots, err := CheckWorkspaceExceptionRoots(opts.WorkspaceRoot, opts.PerWorkspaceRoots)
 	if err != nil {
 		return nil, err
 	}
@@ -208,46 +204,6 @@ func NewWorkspaceExceptionStore(opts WorkspaceExceptionStoreOptions) (*Workspace
 	}
 	s.Reload()
 	return s, nil
-}
-
-// checkWorkspaceRoot requires root to be absolute, clean, not "/", and free
-// of symlinks in the proxy's mount namespace.
-func checkWorkspaceRoot(root string) error {
-	if !path.IsAbs(root) || path.Clean(root) != root || root == "/" {
-		return fmt.Errorf("workspace root %q must be an absolute, clean path other than /", root)
-	}
-	resolved, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return fmt.Errorf("workspace root %q cannot be resolved: %w", root, err)
-	}
-	if resolved != root {
-		return fmt.Errorf("workspace root %q is not canonical: it resolves to %q", root, resolved)
-	}
-	return nil
-}
-
-// checkPerWorkspaceRoots returns the effective per-workspace roots: root
-// alone when roots is empty. Each is checked like the workspace root, root
-// must be listed, and no root may be inside another (a folder name would then
-// scope two ways).
-func checkPerWorkspaceRoots(root string, roots []string) ([]string, error) {
-	if len(roots) == 0 {
-		return []string{root}, nil
-	}
-	if !slices.Contains(roots, root) {
-		return nil, fmt.Errorf("per-workspace roots %q must include the workspace root %q", roots, root)
-	}
-	for i, r := range roots {
-		if err := checkWorkspaceRoot(r); err != nil {
-			return nil, fmt.Errorf("per-workspace root: %w", err)
-		}
-		for j, other := range roots {
-			if i != j && (r == other || strings.HasPrefix(r, other+"/")) {
-				return nil, fmt.Errorf("per-workspace root %q repeats or is inside %q", r, other)
-			}
-		}
-	}
-	return slices.Clone(roots), nil
 }
 
 // Path is the watched file path.
