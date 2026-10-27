@@ -30,7 +30,7 @@ func TestForkFieldRestartGrantNames(t *testing.T) {
 			for _, name := range []string{"", "no", "on-failure", "always", "unless-stopped"} {
 				t.Run("name="+name, func(t *testing.T) {
 					want, reason := 201, ""
-					if name != "" && name != "no" && !(grant == "same" && name == "on-failure") {
+					if name != "" && name != "no" && (grant != "same" || name != "on-failure") {
 						want, reason = 403, "restart policy"
 					}
 					h.postCreate(t, h.create(map[string]any{"RestartPolicy": map[string]any{"Name": name, "MaximumRetryCount": 3}}), want, reason)
