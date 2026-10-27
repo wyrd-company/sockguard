@@ -26,7 +26,9 @@ directory read-only and never writes the file.
   binds under a per-workspace root scoped to that workspace. See
   [Workspace identity](#workspace-identity) and
   [Per-workspace roots](#per-workspace-roots). These are the rules of the
-  feature that deny a request the base policy admits.
+  feature that deny a request the base policy admits. They apply only to
+  blocks that opt in with `apply_workspace_exceptions`; every other block is
+  unchanged.
 
 ## Configuration
 
@@ -244,10 +246,19 @@ per-workspace root's direct children belong to one workspace each, by folder
 name: `/srv/workspaces/alpha` and `/srv/workspace-sockets/alpha` both belong
 to workspace `/srv/workspaces/alpha`.
 
-A host path under a per-workspace root `R` must be inside `R/<basename W>` or
-inside one of `W`'s `extraBindSources`. Host paths outside every per-workspace
-root, such as a template cache folder or a Compose staging folder, follow the
-base allowlist as before.
+A host path under a per-workspace root `R` must be inside `R/<basename W>`
+(the last element of the workspace key) or, when the exception applies,
+inside one of `W`'s `extraBindSources`. Host paths outside every
+per-workspace root, such as a template cache folder or a Compose staging
+folder, follow the base allowlist as before.
+
+- The rule applies to every create in the block, whether or not an entry
+  matches and whether or not the file is valid: the roots come from the
+  configuration, so a missing or invalid file removes only the grants, never
+  the scoping.
+- `extraBindSources` are a grant. They count only when the exception applies:
+  the devcontainer header, an entry for `W`, and a passing match. A create
+  whose match fails, and every throwaway request, gets none.
 
 - The host paths are the ones the bind allowlist checks: `HostConfig.Binds`
   sources, `HostConfig.Mounts` binds, host-path `Config.Volumes` keys,
@@ -263,8 +274,6 @@ base allowlist as before.
   scoping narrows an entry at or under a root to the request's folder, and an
   entry above a root cannot be narrowed that way. List the roots and the
   folders beside them instead.
-- A throwaway request gets none of `W`'s `extraBindSources`: they are an
-  exception.
 - Each of `W`'s folders under a per-workspace root must not be a symlink. A
   request whose folder is one is denied, since the bind checks would follow
   it into whatever it points at. A folder that does not exist yet is fine.
