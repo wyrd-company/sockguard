@@ -422,6 +422,43 @@ describe("fork release workflow", () => {
     return new RegExp(`^${out}$`, "u");
   }
 
+  it("serializes every release tag and manual run in one workflow concurrency group", () => {
+    assert.match(
+      source(),
+      /^concurrency:\n {2}group: fork-release\n/mu,
+      `${FILE}: every release must share one literal workflow group, independent of ref or event`,
+    );
+  });
+
+  it("keeps an in-progress release running when another release is admitted", () => {
+    assert.match(
+      source(),
+      /^concurrency:\n {2}group: [^\n]+\n {2}cancel-in-progress: false$/mu,
+      `${FILE}: a later release must not cancel the running release`,
+    );
+  });
+
+  it("fetches full history and current fork tags before the serialized tag check", () => {
+    const verify = parseJobs(source(), FILE).find((job) => job.name === "verify");
+    assert.ok(verify, `${FILE}: verify job missing`);
+    const checkout = verify.body.match(
+      /^ {6}- name: Checkout\n {8}uses: actions\/checkout@[^\n]+\n {8}with:\n((?: {10}[^\n]+\n)+)/mu,
+    );
+    assert.ok(checkout, `${FILE}: verify checkout settings missing`);
+    assert.match(
+      checkout[1],
+      /^ {10}fetch-depth: 0$/mu,
+      "full history must be fetched after admission",
+    );
+    assert.match(
+      checkout[1],
+      /^ {10}fetch-tags: true$/mu,
+      "current fork tags must be fetched after admission",
+    );
+    const check = verify.body.indexOf(`      - name: ${RELEASE_STEP}\n`);
+    assert.ok(check > checkout.index, `${FILE}: the tag check must follow the fresh checkout`);
+  });
+
   it("triggers only on a fork release tag push and on manual dispatch", () => {
     const triggers = triggerBlock();
     assert.equal(

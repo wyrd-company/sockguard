@@ -188,6 +188,53 @@ describe("fork-release-tag.sh", () => {
     assertRefused(verify(fx, "2.2.10-wyrd.1"), /the next counter for base 2\.2\.10 is 3/u);
   });
 
+  for (const { label, newerTag, from, reason } of [
+    {
+      label: "counter",
+      newerTag: "2.2.10-wyrd.2",
+      from: "line",
+      reason: /the next counter for base 2\.2\.10 is 3/u,
+    },
+    {
+      label: "base",
+      newerTag: "2.2.11-wyrd.1",
+      from: "v2.2.11",
+      reason: /fork tag 2\.2\.11-wyrd\.1 is on a newer upstream base/u,
+    },
+  ]) {
+    it(`fresh tag fetch refuses an older ${label} after the newer release and on rerun`, () => {
+      const fx = fixture();
+      const olderTag = "2.2.10-wyrd.1";
+      // Keep the older tag on the fork line in both cases, so the refusal
+      // must come from the counter/newer-base guard, not branch ancestry.
+      git(fx.fork, "checkout", "--quiet", "-b", "line", fx.upstreamCommits["v2.2.10"]);
+      git(fx.fork, "tag", olderTag);
+      const runner = join(fx.dir, "runner");
+      git(fx.dir, "clone", "--quiet", "--no-local", "--branch", "line", fx.fork, runner);
+      const run = (tag) =>
+        verify({ ...fx, fork: runner }, tag, { FORK_LINE_REF: "refs/remotes/origin/line" });
+      assert.equal(run(olderTag).status, 0, "older tag must pass before the newer tag exists");
+
+      forkCommit(fx, { from: fx.upstreamCommits[from] ?? from, tag: newerTag });
+      const newer = verify(fx, newerTag);
+      assert.equal(newer.status, 0, newer.stderr);
+      assert.ok(!git(runner, "tag", "--list").includes(newerTag), "control checkout must be stale");
+      assert.equal(run(olderTag).status, 0, "stale tags must expose the unsafe older admission");
+
+      // Model the serialized workflow's full checkout fetch after admission.
+      // This works even when the newer release ran before the older run.
+      git(runner, "fetch", "--force", "--tags", "origin", "+refs/heads/*:refs/remotes/origin/*");
+      assert.ok(
+        git(runner, "tag", "--list").includes(newerTag),
+        "full fetch must see the newer tag",
+      );
+      const current = run(newerTag);
+      assert.equal(current.status, 0, current.stderr);
+      assertRefused(run(olderTag), reason);
+      assertRefused(run(olderTag), reason);
+    });
+  }
+
   it("resets the counter to 1 on a new upstream base", () => {
     const fx = fixture();
     forkCommit(fx, { from: fx.upstreamCommits["v2.2.10"], tag: "2.2.10-wyrd.1" });
