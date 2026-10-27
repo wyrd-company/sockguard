@@ -277,7 +277,7 @@ describe("fork workflow dispositions", () => {
 // running the fork's test, lint and build gates.
 describe("fork-ci workflow", () => {
   const FILE = "fork-ci.yml";
-  const BRANCHES = "[main, 'epic/*']";
+  const BRANCHES = "[main, wyrd, 'epic/*']";
 
   function topLevelBlock(source, key) {
     const match = source.match(new RegExp(`^${key}:\\n((?:(?: .*)?\\n)*)`, "mu"));
@@ -285,7 +285,7 @@ describe("fork-ci workflow", () => {
     return match[1].trimEnd();
   }
 
-  it("triggers only on push and pull_request for main and epic/*", () => {
+  it("triggers only on push and pull_request for main, wyrd and epic/*", () => {
     const on = topLevelBlock(readWorkflow(FILE), "on");
     assert.equal(
       on,
