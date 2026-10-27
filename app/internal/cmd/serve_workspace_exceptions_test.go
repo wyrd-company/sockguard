@@ -129,18 +129,9 @@ func TestAttachWorkspaceExceptionsReachesDefaultAndProfiles(t *testing.T) {
 	if profiles["sample"].ContainerCreate.WorkspaceExceptions != nil {
 		t.Fatal("the caller's profile map must not be modified")
 	}
-	// Only a block that applies exceptions gets the start re-check scope.
+	// The start and restart re-check is not wired here.
 	if opts.ForkStartRecheck.Workspace != nil || opts.Profiles["sample"].ForkStartRecheck.Workspace != nil {
-		t.Fatal("a block without apply_workspace_exceptions must not get the start re-check scope")
-	}
-	applied := filter.Options{Profiles: map[string]filter.Policy{"menagerie": {}}}
-	applied.ContainerCreate.ApplyWorkspaceExceptions = true
-	menagerie := applied.Profiles["menagerie"]
-	menagerie.ContainerCreate.ApplyWorkspaceExceptions = true
-	applied.Profiles["menagerie"] = menagerie
-	applied = attachWorkspaceExceptions(applied, store)
-	if applied.ForkStartRecheck.Workspace == nil || applied.Profiles["menagerie"].ForkStartRecheck.Workspace == nil {
-		t.Fatal("a block with apply_workspace_exceptions must get the start re-check scope")
+		t.Fatal("attachWorkspaceExceptions must not attach the start re-check scope")
 	}
 	if got := attachWorkspaceExceptions(filter.Options{Profiles: profiles}, nil); got.ContainerCreate.WorkspaceExceptions != nil {
 		t.Fatal("a nil store attaches nothing")
@@ -215,9 +206,8 @@ func TestServeChainAppliesWorkspaceExceptions(t *testing.T) {
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("cross-workspace bind: status %d, want 403", rec.Code)
 			}
-			// A create and a start without the workspace header are denied
-			// before the daemon is read.
-			for _, path := range []string{"/v1.51/containers/create", "/v1.51/containers/sample/start"} {
+			// A create without the workspace header is denied.
+			for _, path := range []string{"/v1.51/containers/create"} {
 				rec := httptest.NewRecorder()
 				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(f.createBody(f.alpha))))
 				if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "the request names no workspace") {

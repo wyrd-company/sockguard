@@ -124,8 +124,9 @@ func (m WorkspaceExceptionMatch) LogValue() string {
 //     the proxy's mount namespace.
 //  3. Every host path the request mounts (bind sources, host-path Volumes
 //     keys, local volume bind devices, overlay directories) resolves inside
-//     W or one of the entry's extraBindSources, by the same checks the bind
-//     allowlist uses, symlink resolution included.
+//     W, W's own folder under a per-workspace root, or one of the entry's
+//     extraBindSources, by the same checks the bind allowlist uses, symlink
+//     resolution included.
 //  4. At least one bind source resolves to W or inside it.
 //
 // Details never quote W, which comes from a request header.
@@ -165,7 +166,7 @@ func MatchWorkspaceException(snap *WorkspaceExceptionSnapshot, workspace string,
 		return notApplied(cause, detail)
 	}
 	hostConfig, volumes := req.containerCreateShape()
-	agreement := containerCreatePolicy{allowedBindMounts: workspaceAgreementAllowlist(entry)}
+	agreement := containerCreatePolicy{allowedBindMounts: workspaceAgreementAllowlist(entry, snap.perWorkspaceRoots())}
 	if reason := agreement.denyBindMountReason(hostConfig); reason != "" {
 		return notApplied(WorkspaceCauseBindSourceOutside, outsideWorkspaceDetail(reason))
 	}
@@ -195,9 +196,17 @@ func checkWorkspaceFolder(workspace string) (cause, detail string) {
 }
 
 // workspaceAgreementAllowlist is the allowlist the agreement rule checks
-// every host path against: the workspace and the entry's extra bind sources.
-func workspaceAgreementAllowlist(entry *workspaceExceptionEntry) []string {
-	return append([]string{entry.workspace}, entry.grants.extraBindSources...)
+// every host path against: the workspace, its own folder under every
+// per-workspace root (<root>/<basename W>, which belongs to W the same way W
+// does), and the entry's extra bind sources.
+func workspaceAgreementAllowlist(entry *workspaceExceptionEntry, roots []string) []string {
+	out := []string{entry.workspace}
+	for _, root := range roots {
+		if own := path.Join(root, path.Base(entry.workspace)); own != entry.workspace {
+			out = append(out, own)
+		}
+	}
+	return append(out, entry.grants.extraBindSources...)
 }
 
 // outsideWorkspaceDetail rewords a bind check's deny reason, which was
