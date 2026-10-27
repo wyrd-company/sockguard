@@ -360,7 +360,10 @@ single-container create:
 - Configs and secrets become read-only bind `Mounts` under the object root
   (`UserDataFolder`, default `$TMPDIR/dcb-compose`, `object_state.go:25`). The
   object root must be inside `allowed_bind_mounts` and must be a path the
-  daemon host and Menagerie both see. Menagerie does not set `UserDataFolder`.
+  daemon host and Menagerie both see. Menagerie sets `UserDataFolder` to
+  `<staging root>/<basename W>`, and the staging root is a
+  `workspace_exceptions.per_workspace_roots` entry, so staged binds are scoped
+  to their workspace.
 - Only the primary carries `devcontainer.local_folder` (`labels.go:39`). A
   sidecar has whatever its Compose file sets under `labels:` (`up.go:308`
   merges service labels that DCB does not manage), so labels are never
