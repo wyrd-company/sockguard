@@ -134,7 +134,7 @@ refactor(proxy): simplify middleware chain
 
 ### Fork real-daemon acceptance
 
-Run `make acceptance` from the repository root with Docker available. The target builds the exact fork image and drives the pinned consumer in an owned dind fixture. `ACCEPTANCE_STORE=classic make acceptance` selects the classic image store; the default is containerd. The tests use the `sockguardacceptance` build tag in a separate module, so ordinary Go tests need no daemon. See [the acceptance guide](tests/acceptance/README.md) for inputs, controls, logs and cleanup.
+Prepare the bootstrap image outside the wrapper with `docker pull docker:29.9.2-dind`, then run `make acceptance` from the repository root. The local operator owns that prerequisite; CI prepares it as ephemeral runner infrastructure before the protected baseline. The wrapper verifies and pins its immutable ID without pulling or removing it. The target builds the exact fork image and drives the pinned consumer in an owned dind fixture. `ACCEPTANCE_STORE=classic make acceptance` selects the classic image store; the default is containerd. Locally built `ACCEPTANCE_DAEMON_IMAGE` overrides remain supported. The tests use the `sockguardacceptance` build tag in a separate module, so ordinary Go tests need no daemon. See [the acceptance guide](tests/acceptance/README.md) for inputs, controls, logs and cleanup.
 
 ### TypeScript
 

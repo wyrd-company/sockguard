@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fork: acceptance bootstrap prerequisite.** CI prepares its daemon image as runner infrastructure before the protected inventory baseline. Local runs require an operator-prepared image. The wrapper records and pins the immutable image ID for both containers, verifies their image associations and refuses implicit pulls while retaining strict inventory and owned-resource cleanup checks.
+
 - **Fork: preserve admitted full-method BuildKit session declarations.** `/service/method` advertisements use the existing endpoint classifier and per-method policy, so an enabled FileSync/DiffCopy is retained for local Dockerfile/context callbacks. Unknown, disabled and malformed declarations are removed individually; TarStream keeps its existing denial. Admitted values retain their spelling, order and repetitions. Legacy bare-service declarations and callback mediation, ownership, cancellation and limits retain their existing gates.
 
 - **Fork: BuildKit Status may arrive before Solve.** Status waits for matching ref admission by the same trusted client identity and profile before any upstream read. It creates no ownership; denied admission and other identities/profiles cannot release it. Existing cancellation, session closure, stream/message bounds and Solve limits govern the wait. Original request frames are forwarded unchanged.

@@ -41,7 +41,6 @@ shared_snapshot() {
   docker image ls -aq --no-trunc | sort -u
   docker volume ls -q | sort
 }
-shared_snapshot > "$scratch/shared.before"
 store="${ACCEPTANCE_STORE:-containerd}"
 case "$store" in
   classic) feature=false ;;
@@ -49,6 +48,24 @@ case "$store" in
   *) echo "unsupported ACCEPTANCE_STORE: $store" >&2; exit 1 ;;
 esac
 daemon_image="${ACCEPTANCE_DAEMON_IMAGE:-docker:29.9.2-dind}"
+# Bootstrap images are runner infrastructure, prepared by CI setup or the local
+# operator. Resolve before protected admission; never pull or remove one here.
+if ! daemon_image_id="$(docker image inspect --format '{{.Id}}' "$daemon_image")"; then
+  echo 'acceptance: bootstrap image prerequisite missing; prepare it outside run.sh' >&2
+  exit 1
+fi
+if [[ ! "$daemon_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo 'acceptance: bootstrap prerequisite did not resolve to an immutable image ID' >&2
+  exit 1
+fi
+if ! daemon_repo_digests="$(docker image inspect --format '{{json .RepoDigests}}' "$daemon_image_id")"; then
+  echo 'acceptance: bootstrap prerequisite provenance lookup failed' >&2
+  exit 1
+fi
+# [] or null explicitly records a locally built image without registry digests.
+printf 'BOOTSTRAP_PREREQUISITE requested=%q image_id=%s repo_digests=%s\n' \
+  "$daemon_image" "$daemon_image_id" "$daemon_repo_digests" | tee "$scratch/bootstrap-prerequisite.txt"
+shared_snapshot > "$scratch/shared.before"
 daemon_id=''
 runner_id=''
 created_volumes=()
@@ -82,6 +99,20 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# Called only with a container ID returned by this wrapper's own create.
+verify_bootstrap_container() {
+  local role="$1" container_id="$2" actual_image
+  if ! actual_image="$(docker inspect --format '{{.Image}}' "$container_id")"; then
+    echo "acceptance: $role bootstrap image association lookup failed" >&2
+    return 1
+  fi
+  if [[ "$actual_image" != "$daemon_image_id" ]]; then
+    echo "acceptance: $role bootstrap image association differs from resolved prerequisite" >&2
+    return 1
+  fi
+  printf 'BOOTSTRAP_CONTAINER role=%s id=%s image_id=%s\n' "$role" "$container_id" "$actual_image" | \
+    tee -a "$scratch/bootstrap-prerequisite.txt"
+}
 printf 'HEAD=%s TREE=%s CWD=%s STORE=%s RUN=%s MODE=%s\n' "$source_head" "$source_tree" "$repo_root" "$store" "$run_id" "$mode"
 df -h "$scratch"
 # A separate module pins the consumer SDK without adding proxy dependencies.
@@ -99,11 +130,12 @@ for purpose in paths socket store; do
   docker volume create --label "org.example.acceptance.run=$run_id" "$owned_volume"
   created_volumes+=("$owned_volume")
 done
-daemon_id="$(docker create --privileged --label "org.example.acceptance.run=$run_id" \
+daemon_id="$(docker create --pull=never --privileged --label "org.example.acceptance.run=$run_id" \
   --mount "type=volume,src=$run_id-paths,dst=/acceptance" \
   --mount "type=volume,src=$run_id-socket,dst=/run" \
   --mount "type=volume,src=$run_id-store,dst=/var/lib/docker" \
-  --entrypoint dockerd "$daemon_image" --host=unix:///run/docker.sock --feature="containerd-snapshotter=$feature")"
+  --entrypoint dockerd "$daemon_image_id" --host=unix:///run/docker.sock --feature="containerd-snapshotter=$feature")"
+verify_bootstrap_container daemon "$daemon_id"
 docker start "$daemon_id"
 ready=false
 for _ in $(seq 1 120); do
@@ -114,14 +146,15 @@ if [[ "$ready" != true ]]; then docker logs "$daemon_id"; echo 'owned daemon fai
 # The test runner and daemon share this volume at the SAME path. The proxy
 # later bind-mounts its children from this daemon namespace at those paths.
 docker exec "$daemon_id" sh -c 'chmod 0777 /acceptance; chmod 0666 /run/docker.sock'
-runner_id="$(docker create --user 10001:10002 --group-add 20001 \
+runner_id="$(docker create --pull=never --user 10001:10002 --group-add 20001 \
   --label "org.example.acceptance.run=$run_id" \
   --mount "type=volume,src=$run_id-paths,dst=/acceptance" \
   --mount "type=volume,src=$run_id-socket,dst=/run" \
   --env DOCKER_HOST=unix:///run/docker.sock --env DOCKER_CONFIG=/acceptance/docker-config \
   --env ACCEPTANCE_REQUIRED=1 --env ACCEPTANCE_RUN="$run_id" --env ACCEPTANCE_SOURCE_HEAD="$source_head" \
   --env ACCEPTANCE_SOURCE_TREE="$source_tree" --env ACCEPTANCE_STORE="$store" --env ACCEPTANCE_DAEMON_IMAGE="$daemon_image" \
-  --entrypoint /acceptance.test "$daemon_image" -test.v -test.timeout=30m "${@}")"
+  --entrypoint /acceptance.test "$daemon_image_id" -test.v -test.timeout=30m "${@}")"
+verify_bootstrap_container runner "$runner_id"
 docker cp "$scratch/acceptance.test" "$runner_id:/acceptance.test"
 # Copy only fork-build inputs and tracked acceptance inputs. No node_modules,
 # empty untracked fixture directories or operator Docker configuration.

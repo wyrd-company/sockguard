@@ -113,6 +113,8 @@ jobs:
     name: "Real Docker Acceptance (${{ matrix.store }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    env:
+      ACCEPTANCE_DAEMON_IMAGE: docker:29.9.2-dind
     strategy:
       fail-fast: false
       matrix:
@@ -128,6 +130,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+
+      # The ephemeral job owns this prerequisite as runner infrastructure.
+      # Preparation must finish before the suite's protected inventory baseline.
+      - name: Prepare acceptance bootstrap image
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/acceptance"
+          docker pull "$ACCEPTANCE_DAEMON_IMAGE" 2>&1 | tee "$RUNNER_TEMP/acceptance/bootstrap-prepare.log"
 
       # The owned dind daemon gives every scratch path the same real spelling
       # in the runner, daemon and proxy mount namespaces. No shared daemon

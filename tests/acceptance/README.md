@@ -11,11 +11,23 @@ relationships:
 Run from the repository root:
 
 ```sh
+docker pull docker:29.9.2-dind
 make acceptance
 ACCEPTANCE_STORE=classic make acceptance
 ```
 
-The target needs Docker and Go. It uses an owned privileged `docker:29.9.2-dind` fixture, an owned runner and three owned volumes. It changes no shared daemon configuration. A separate module pins `devcontainer-builder` v0.2.0 (`c432d28f97ce18f07f8e032187ab7c211e8a6595`) and its Docker SDK; proxy dependencies are unchanged. The `sockguardacceptance` build tag and required fixture environment keep default Go tests hermetic. Running the tagged test binary without the fixture fails explicitly.
+The target needs Docker, Go and a prepared bootstrap image. The local operator prepares and owns that image outside `run.sh`; the pull above is an explicit preparation command. Fork CI prepares it in job setup and owns it as ephemeral runner infrastructure, retaining `bootstrap-prepare.log` through the existing artifact upload even on preparation failure. Preparation must succeed before the protected suite begins. The wrapper never pulls or removes a shared bootstrap image and fails before compilation, the protected inventory baseline or any resource create when the prerequisite is missing.
+
+The wrapper resolves `ACCEPTANCE_DAEMON_IMAGE` (default `docker:29.9.2-dind`) to an immutable image-config ID before admission. It records the requested value and available RepoDigests in `bootstrap-prerequisite.txt`, uses that ID with `--pull=never` for both creates, and checks each created container's `.Image` before starting it. A tag change after verification cannot select a different image. Locally built overrides remain supported:
+
+```sh
+# The operator has already built this image outside the wrapper.
+ACCEPTANCE_DAEMON_IMAGE=example-fixture:local make acceptance
+```
+
+An empty or null RepoDigests value is recorded explicitly; it does not claim registry provenance. The prerequisite remains pre-existing infrastructure for the protected interval. Unknown inventory additions and removals still fail; prerequisite preparation does not authorize moving an unexplained object across the baseline or deleting it.
+
+The target uses an owned privileged daemon, an owned runner and three owned volumes. It changes no shared daemon configuration. A separate module pins `devcontainer-builder` v0.2.0 (`c432d28f97ce18f07f8e032187ab7c211e8a6595`) and its Docker SDK; proxy dependencies are unchanged. The `sockguardacceptance` build tag and required fixture environment keep default Go tests hermetic. Running the tagged test binary without the fixture fails explicitly.
 
 `ACCEPTANCE_STORE` selects `containerd` (default) or `classic`. The fork CI runs both. Each run records the actual daemon version, store, source commit/tree and built image ID. A passing containerd run proves that variant only. A separate BuildKit worker, native libpod and Swarm manager are outside this suite's runtime claim.
 
@@ -48,7 +60,7 @@ These are assertions the suite is required to execute, not a claim that a partic
 
 ## Evidence and ownership
 
-The wrapper acquires the shared-heavy lock before the Sockguard lock and logs uptime, source head/tree, cwd, store and terminal exit. A parent gate can retain these locks across fixtures through verified inherited descriptors. The wrapper compares source state and shared container/image/volume inventories before and after execution; a mismatch fails the run. Shell fault tests cover its empty-suite, terminal-result, source/inventory and cleanup guards with tool doubles, separate from real-daemon evidence. On shared hosts it also needs the orchestrator's explicit heavy-slot release. `ACCEPTANCE_EVIDENCE_ROOT` can select the evidence parent directory. The printed `EVIDENCE` path contains daemon logs and copied runtime inputs/configuration/proxy logs even after failure. Fork CI uploads that directory on every outcome.
+The wrapper acquires the shared-heavy lock before the Sockguard lock and logs uptime, source head/tree, cwd, store and terminal exit. A parent gate can retain these locks across fixtures through verified inherited descriptors. After prerequisite verification, the wrapper compares source state and complete shared container/image/volume inventories before and after execution; any addition or removal fails the run. Shell fault tests cover bootstrap presence/provenance/immutable selection and both image associations, empty-suite, terminal-result, source/inventory and cleanup guards with tool doubles, separate from real-daemon evidence. CI controls execute the actual preparation and suite-step scripts with tool doubles; a failed preparation cannot admit the suite. On shared hosts it also needs the orchestrator's explicit heavy-slot release. `ACCEPTANCE_EVIDENCE_ROOT` can select the evidence parent directory. The printed `EVIDENCE` path contains the prerequisite receipt, daemon logs and copied runtime inputs/configuration/proxy logs even after failure. Fork CI uploads that directory on every outcome.
 
 Every workload output image/container/network/volume carries a unique run label. The HTTP observation relay adds only the generic provenance label to consumer create requests; it leaves identity labels, security fields, binds and scheduling intact. Direct fixture IDs have creation receipts. Build-source images and caches stay confined to the owned daemon store and disappear with its owned volume; no shared image is removed.
 
