@@ -431,3 +431,45 @@ func TestForkStartRecheckNoWorkspaceProfileIgnoresHeaders(t *testing.T) {
 		assertForwarded(t, sendWorkspace(t, policy, "/containers/c1/start", header))
 	}
 }
+
+// TestForkStartRecheckWorkspaceAllowedPaths covers the paths a workspace
+// source may use besides its own folder: a base allowlist entry that is a
+// symlink, an extra bind source under a per-workspace root, and the parents
+// of a base entry that does not exist yet, which the daemon creates.
+func TestForkStartRecheckWorkspaceAllowedPaths(t *testing.T) {
+	t.Run("base entry that is a symlink", func(t *testing.T) {
+		f := newForkStartRecheckWorkspaceFixture(t)
+		link := filepath.Join(filepath.Dir(f.ws), "cache-link")
+		if err := os.Symlink(filepath.Join(f.extra, "data"), link); err != nil {
+			t.Fatal(err)
+		}
+		policy := f.forkStartRecheckFixture.policy([]string{f.ws, link}, nil)
+		policy.ForkStartRecheck.Workspace = func(w ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error) {
+			scope, err := f.scope(w)
+			scope.ExtraBindSources = nil
+			return scope, err
+		}
+		f.daemon.set(http.StatusOK, containerIn(t, []string{filepath.Join(link, "sub")}))
+		assertForwarded(t, sendWorkspace(t, policy, "/containers/c1/start", devcontainerHeader(f.alpha)))
+	})
+	t.Run("extra bind source under a root", func(t *testing.T) {
+		f := newForkStartRecheckWorkspaceFixture(t)
+		shared := filepath.Join(f.beta, "proj")
+		policy := f.policy()
+		policy.ForkStartRecheck.Workspace = func(w ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error) {
+			scope, err := f.scope(w)
+			scope.ExtraBindSources = append(scope.ExtraBindSources, shared)
+			return scope, err
+		}
+		f.daemon.set(http.StatusOK, containerIn(t, []string{shared}))
+		assertForwarded(t, sendWorkspace(t, policy, "/containers/c1/start", devcontainerHeader(f.alpha)))
+	})
+	t.Run("parents of a base entry that does not exist yet", func(t *testing.T) {
+		f := newForkStartRecheckWorkspaceFixture(t)
+		entry := filepath.Join(filepath.Dir(f.ws), "later", "entry")
+		policy := f.forkStartRecheckFixture.policy([]string{f.ws, entry}, nil)
+		policy.ForkStartRecheck.Workspace = f.scope
+		f.daemon.set(http.StatusOK, containerIn(t, []string{filepath.Join(entry, "data")}))
+		assertForwarded(t, sendWorkspace(t, policy, "/containers/c1/start", devcontainerHeader(f.alpha)))
+	})
+}
