@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/go-viper/mapstructure/v2"
-	"go.yaml.in/yaml/v3"
+	"github.com/spf13/viper"
 )
 
 // This hermetic gate reads the actual portable reviewed profile bytes. The
@@ -49,8 +50,9 @@ func TestForkAcceptanceProfileConfigEffects(t *testing.T) {
 		t.Fatal("reviewed README bytes drift from input hash")
 	}
 	t.Run("EveryAuthoredKeyRecognized", func(t *testing.T) {
-		var authored map[string]any
-		if e := yaml.Unmarshal(raw, &authored); e != nil {
+		authoredInput := viper.New()
+		authoredInput.SetConfigType("yaml")
+		if e := authoredInput.ReadConfig(bytes.NewReader(raw)); e != nil {
 			t.Fatal(e)
 		}
 		var strict Config
@@ -58,7 +60,7 @@ func TestForkAcceptanceProfileConfigEffects(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		if e = decoder.Decode(authored); e != nil {
+		if e = decoder.Decode(authoredInput.AllSettings()); e != nil {
 			t.Fatalf("profile contains an ignored/invalid key: %v", e)
 		}
 	})
