@@ -199,10 +199,12 @@ func newFixture(t *testing.T) *fixture {
 	info, e := d.Info(ctx)
 	must(t, e)
 	t.Logf("RUNTIME version=%s api=%s driver=%s status=%v root=%s source=%s tree=%s store_input=%s daemon_image=%s", v.Version, v.APIVersion, info.Driver, info.DriverStatus, info.DockerRootDir, os.Getenv("ACCEPTANCE_SOURCE_HEAD"), os.Getenv("ACCEPTANCE_SOURCE_TREE"), os.Getenv("ACCEPTANCE_STORE"), os.Getenv("ACCEPTANCE_DAEMON_IMAGE"))
+	t.Logf("RUNTIME_COMPONENTS=%+v", v.Components)
 	f.forkImage = "acceptance-proxy:" + f.run
 	f.baseImage = "acceptance-base:" + f.run
 	// Exact authored fork Dockerfile; source commit and image ID are both logged.
 	command(t, f.ctx, "docker", "build", "--no-cache", "--label", runLabel+"="+f.run, "--build-arg", "COMMIT="+os.Getenv("ACCEPTANCE_SOURCE_HEAD"), "--tag", f.forkImage, f.source)
+	command(t, f.ctx, "docker", "buildx", "inspect", "default")
 	f.recordImage(f.forkImage)
 	dir := filepath.Join(root, "base")
 	write(t, filepath.Join(dir, "Dockerfile"), []byte("FROM alpine:3.22\nLABEL "+runLabel+"="+f.run+"\n"))

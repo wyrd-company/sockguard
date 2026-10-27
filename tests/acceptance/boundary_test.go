@@ -104,6 +104,24 @@ func testGrants(t *testing.T, f *fixture, p *proxy) {
 			if before.ID != after.ID || before.State.Pid != after.State.Pid || before.State.StartedAt != after.State.StartedAt {
 				t.Fatal("proxy restarted across live exception edit")
 			}
+			t.Run("PrimaryWithoutWorkspaceBind", func(t *testing.T) {
+				withoutBind := map[string]any{}
+				for k, v := range host {
+					if k != "Binds" {
+						withoutBind[k] = v
+					} else {
+						var remaining []string
+						for _, bind := range v.([]string) {
+							if !strings.HasPrefix(bind, w+":") {
+								remaining = append(remaining, bind)
+							}
+						}
+						withoutBind[k] = remaining
+					}
+				}
+				_, s, b := f.create(t, p, w, workspaceHeader, map[string]string{primaryLabel: w}, withoutBind)
+				denied(t, s, b, tc.reason)
+			})
 			for _, control := range []struct {
 				name, h string
 				labels  map[string]string
