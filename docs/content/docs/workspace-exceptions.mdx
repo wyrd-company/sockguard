@@ -21,10 +21,12 @@ directory read-only and never writes the file.
   Their own settings apply.
 - An exception only opens gates. It never closes a gate that the base policy
   opens.
-- In a block with `apply_workspace_exceptions`, every create also has its
-  binds under a per-workspace root scoped to its own workspace. See
-  [Per-workspace roots](#per-workspace-roots). This is the one rule of the
-  feature that denies a request the base policy admits.
+- In a block with `apply_workspace_exceptions`, every create, exec create and
+  exec start must name its workspace in a header, and every create has its
+  binds under a per-workspace root scoped to that workspace. See
+  [Workspace identity](#workspace-identity) and
+  [Per-workspace roots](#per-workspace-roots). These are the rules of the
+  feature that deny a request the base policy admits.
 
 ## Configuration
 
@@ -168,34 +170,71 @@ The proxy checks the shape of these fields. It does not compare `at` with the
 clock, and an entry does not expire. The fields are claims written by the
 file's writer. They support audit; they do not authenticate the approval.
 
+## Workspace identity
+
+In a block with `apply_workspace_exceptions: true`, a request names its
+workspace `W` only in a request header that the workspace manager sets on its
+own Docker client. A container label is never identity: whoever writes a
+container's configuration writes its labels (a `--label` run argument
+replaces any label, and a Compose service takes its labels from the Compose
+file). A Compose project name is never identity either.
+
+| Header | Use | Exceptions |
+| --- | --- | --- |
+| `X-Sockguard-Workspace: <W>` | devcontainer jobs | matched as described below |
+| `X-Sockguard-Throwaway-Workspace: <W>` | command containers | never, whatever the file grants |
+
+The header names are fixed; there is no setting for them.
+
+- Exactly one of the two headers, with exactly one non-empty value, must be
+  set. Both headers, a repeated header or an empty value deny the request.
+- `W` must follow the workspace key rules: absolute, clean, a direct child of
+  `workspace_root`, and a canonical directory. Otherwise the request is
+  denied.
+- `devcontainer.local_folder` and `menagerie.throwaway.workspace` on the
+  container must each be absent or equal `W`. Otherwise the request is denied
+  with `workspace label <label> disagrees with the request's workspace`.
+- These requests are denied without a valid header:
+  - Docker-compat `POST /containers/create`;
+  - exec create and exec start, Docker-compat and libpod;
+  - container start and restart, which the start re-check covers (see
+    [Re-check at start and restart](/symlink-bind-sources#re-check-at-start-and-restart)).
+- `/grpc` and `/session` (BuildKit) need no header: no container is created
+  there.
+- Deny reasons name the cause and never quote a header value:
+  `the request names no workspace (set X-Sockguard-Workspace or X-Sockguard-Throwaway-Workspace)`,
+  `the request names more than one workspace`,
+  `the workspace header does not name a valid workspace`.
+- A block without `apply_workspace_exceptions` reads no header.
+
 ## Request matching
 
 A create gets the grants of entry `W` when all of these are true:
 
-1. The base block sets `apply_workspace_exceptions: true`.
-2. The top-level `Labels` has the exact key `devcontainer.local_folder`, and
-   its value is byte-equal to `W`'s `workspace`. The value is not cleaned.
-3. The match-time workspace rules pass.
-4. Every host path the create mounts resolves inside `W` or inside one of
+1. The base block sets `apply_workspace_exceptions: true`, and
+   `X-Sockguard-Workspace` names `W` (see [Workspace identity](#workspace-identity)).
+   The value is byte-equal to the entry's `workspace`; it is not cleaned.
+2. The match-time workspace rules pass.
+3. Every host path the create mounts resolves inside `W` or inside one of
    `W`'s `extraBindSources`: `HostConfig.Binds` sources, `HostConfig.Mounts`
    binds, host-path `Config.Volumes` keys, overlay directories, and the bind
    device and overlay directories of a `local` volume. The checks and the
    symlink resolution are the ones the bind allowlist uses (see
    [Symlink bind sources](/symlink-bind-sources)).
-5. At least one bind source resolves to `W` or inside it: the workspace
+4. At least one bind source resolves to `W` or inside it: the workspace
    mount.
 
 | Case | Result |
 | --- | --- |
-| No `devcontainer.local_folder` label | No exception. The base policy decides. |
-| Label present, no entry has its value | No exception. The base policy decides. |
-| Label names an entry, and rule 3, 4 or 5 fails | No exception. The base policy decides. When the base policy denies, the deny reason ends with the cause, for example `workspace exception for "/srv/workspaces/alpha" not applied: a host path is outside the workspace and its extra bind sources (...)`. |
-| File invalid, label is a direct child of the root | No exception. A deny ends with `workspace exceptions unavailable: policy file invalid`. |
+| Throwaway header | No exception. The base policy decides. |
+| No entry has `W` | No exception. The base policy decides. |
+| An entry has `W`, and rule 3 or 4 fails | No exception. The base policy decides. When the base policy denies, the deny reason ends with the cause, for example `workspace exception not applied: a host path is outside the workspace and its extra bind sources (...)`. |
+| File invalid | No exception. A deny ends with `workspace exceptions unavailable: policy file invalid`. |
 | Matched | The base policy plus `W`'s grants. |
 
 A failed match removes grants. It never denies a request that the base policy
-admits; [per-workspace roots](#per-workspace-roots) are a separate rule that
-can.
+admits. The identity rules above and [per-workspace roots](#per-workspace-roots)
+are separate rules that can.
 
 ## Per-workspace roots
 
@@ -205,21 +244,10 @@ per-workspace root's direct children belong to one workspace each, by folder
 name: `/srv/workspaces/alpha` and `/srv/workspace-sockets/alpha` both belong
 to workspace `/srv/workspaces/alpha`.
 
-The request's workspace `W` comes from one label:
-
-| Labels on the request | Workspace | Exceptions |
-| --- | --- | --- |
-| `devcontainer.local_folder` only, a workspace key (an absolute, clean, direct child of `workspace_root`) | its value | matched as described above |
-| `devcontainer.local_folder` only, any other value | none | none |
-| `menagerie.throwaway.workspace` only | its value, which must be a workspace key and a canonical directory, or the request is denied | never, whatever the file grants |
-| both | the request is denied | none |
-| neither | none | none |
-
-A host path under a per-workspace root `R` must then be inside
-`R/<basename W>` or inside one of `W`'s `extraBindSources`. A request with no
-workspace may not mount anything under a per-workspace root. Host paths
-outside every per-workspace root, such as a template cache folder or a
-Compose staging folder, follow the base allowlist as before.
+A host path under a per-workspace root `R` must be inside `R/<basename W>` or
+inside one of `W`'s `extraBindSources`. Host paths outside every per-workspace
+root, such as a template cache folder or a Compose staging folder, follow the
+base allowlist as before.
 
 - The host paths are the ones the bind allowlist checks: `HostConfig.Binds`
   sources, `HostConfig.Mounts` binds, host-path `Config.Volumes` keys,
@@ -240,10 +268,7 @@ Compose staging folder, follow the base allowlist as before.
 - Each of `W`'s folders under a per-workspace root must not be a symlink. A
   request whose folder is one is denied, since the bind checks would follow
   it into whatever it points at. A folder that does not exist yet is fine.
-- The deny reasons name the cause and do not repeat the label values:
-  `labels devcontainer.local_folder and menagerie.throwaway.workspace cannot both be set`,
-  `label menagerie.throwaway.workspace does not name a workspace under the workspace root`,
-  `a host path under a per-workspace root needs a workspace label (...)`,
+- The deny reasons:
   `a host path under a per-workspace root is outside this workspace's folder (...)`,
   `this workspace's folder under a per-workspace root is not a canonical directory`.
 - A block without `apply_workspace_exceptions` is not scoped.
@@ -321,17 +346,19 @@ reloader, and runs whether or not `reload.enabled` is set.
 ## Compose services
 
 Compose services are created through the same `POST /containers/create` and
-get an exception only under the same rules as any create: the exact label and
-bind-source agreement.
+follow the same rules as any create: the workspace header, label agreement,
+bind-source agreement and per-workspace roots.
 
+- The workspace manager's client sends the header on every service's create,
+  so a service matches by its header, with or without a label.
 - devcontainer-builder 0.2.0 sets `devcontainer.local_folder` only on the
   primary service (read from `pkg/host/dockercompose/labels.go`,
   `containerLabels`, and `up.go`, which merges a service's own labels under
-  the managed ones). A
-  non-primary service carries it only when the Compose file sets it under the
-  service's `labels:`. A service without the label gets no exception.
-- A labeled service matches only when its binds agree with that workspace,
-  like any create.
+  the managed ones). A non-primary service carries whatever its Compose file
+  sets, so a label that names another workspace is refused, and a service
+  without one is fine.
+- The Compose project name and working folder are chosen by configuration
+  and are never identity.
 - Compose configs and secrets are bind-mounted read-only from the staging
   folder (devcontainer-builder `UserDataFolder`). That folder must be in
   `allowed_bind_mounts` and must be at the same path for the daemon host and
@@ -348,8 +375,8 @@ bind-source agreement.
 
 ## Logging and metrics
 
-Every create that carries the `devcontainer.local_folder` label, in a block
-with `apply_workspace_exceptions: true`, logs one `container create workspace
+Every create under `X-Sockguard-Workspace`, in a block with
+`apply_workspace_exceptions: true`, logs one `container create workspace
 exception` line with:
 
 - `workspace_exception`: `applied`, `none` or `not_applied:<cause>`;
@@ -360,9 +387,9 @@ exception` line with:
 | Cause | Meaning |
 | --- | --- |
 | `policy_file_invalid` | the file is invalid |
-| `workspace_unresolvable` | the workspace path cannot be resolved, for example it does not exist |
-| `workspace_not_canonical` | the workspace path has a symlink on it |
-| `workspace_not_directory` | the workspace path is not a directory |
+| `workspace_unresolvable` | the workspace path cannot be resolved, for example it does not exist (a create is refused at its header first; the cause stays for other callers of the matcher) |
+| `workspace_not_canonical` | the workspace path has a symlink on it (likewise) |
+| `workspace_not_directory` | the workspace path is not a directory (likewise) |
 | `bind_source_outside_workspace` | a host path is outside the workspace and its extra bind sources |
 | `no_workspace_mount` | no bind source is the workspace or inside it |
 
@@ -374,14 +401,17 @@ exception` line with:
 - The proxy resolves the workspace root, the workspaces and bind sources in
   its own mount namespace. Mount the workspace root into the proxy read-only
   at its host path, as [Symlink bind sources](/symlink-bind-sources) requires.
-- Use one canonical path for the `devcontainer.local_folder` label, the
-  workspace bind source and the entry's `workspace`: the resolved root plus
-  the folder name.
+- Use one canonical path for the workspace header, the
+  `devcontainer.local_folder` label (when set), the workspace bind source and
+  the entry's `workspace`: the resolved root plus the folder name.
+- The workspace manager sets the header on the Docker client it uses for a
+  workspace. A client it does not control (a build helper's own client, for
+  example) gets no create, exec, start or restart in the profile.
 - Keep a bind-type workspace mount. A create that mounts the workspace only
   through a named volume does not match.
 - Containers that should never get an exception, such as command containers
-  for lifecycle hooks, carry `menagerie.throwaway.workspace` with their
-  workspace and no `devcontainer.local_folder` label. Their binds are scoped
-  to that workspace.
+  for lifecycle hooks, are created under `X-Sockguard-Throwaway-Workspace`.
+  Their binds are scoped to that workspace. A `menagerie.throwaway.workspace`
+  label on them, when set, must equal the header.
 - Host paths outside the workspace that a devcontainer binds become
   `extraBindSources`.

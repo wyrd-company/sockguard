@@ -362,10 +362,12 @@ single-container create:
   object root must be inside `allowed_bind_mounts` and must be a path the
   daemon host and Menagerie both see. Menagerie does not set `UserDataFolder`.
 - Only the primary carries `devcontainer.local_folder` (`labels.go:39`). A
-  sidecar has it only when the Compose file sets it under `labels:`
-  (`up.go:308` merges service labels that DCB does not manage). Sidecars
-  therefore get no workspace exceptions unless the template labels them and
-  the bind sources agree with that workspace.
+  sidecar has whatever its Compose file sets under `labels:` (`up.go:308`
+  merges service labels that DCB does not manage), so labels are never
+  identity: in a profile with `apply_workspace_exceptions`, every service's
+  create names its workspace in the `X-Sockguard-Workspace` header, and a
+  label that disagrees with it is refused (see
+  [Workspace exceptions](content/docs/workspace-exceptions.mdx#workspace-identity)).
 
 ### Ownership and label lookups
 
