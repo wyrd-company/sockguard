@@ -48,7 +48,7 @@ func bindRootConfig(t *testing.T, feature bool) *config.Config {
 
 // Run the actual startup path through validation, store, chain and a bound
 // HTTP server. Success means that /probe was served by the composed policy.
-func runBindRootStartup(t *testing.T, cfg *config.Config) (error, *testhelp.CollectingHandler, bool) {
+func runBindRootStartup(t *testing.T, cfg *config.Config) (*testhelp.CollectingHandler, bool, error) {
 	t.Helper()
 	deps := newServeTestDeps()
 	logs := &testhelp.CollectingHandler{}
@@ -78,7 +78,7 @@ func runBindRootStartup(t *testing.T, cfg *config.Config) (error, *testhelp.Coll
 	cmd := newServeCommand()
 	cmd.SetErr(io.Discard)
 	err := runServeWithDeps(cmd, nil, deps)
-	return err, logs, served
+	return logs, served, err
 }
 
 func requireBindRootWarning(t *testing.T, logs *testhelp.CollectingHandler, path, block string) {
@@ -108,7 +108,7 @@ func TestBindRootsStartupMissingWarningPerBlock(t *testing.T) {
 	profile := config.ClientProfileConfig{Name: "sample", Rules: cfg.Rules}
 	profile.RequestBody = cfg.RequestBody
 	cfg.Clients.Profiles = []config.ClientProfileConfig{profile}
-	err, logs, served := runBindRootStartup(t, cfg)
+	logs, served, err := runBindRootStartup(t, cfg)
 	if err != nil || !served {
 		t.Fatalf("warning prevented startup: %v served=%v", err, served)
 	}
@@ -133,7 +133,7 @@ func TestBindRootsStartupExistingDirectoryAndFile(t *testing.T) {
 	cfg.RequestBody.LibpodContainerCreate.AllowedBindMounts = []string{dir, file}
 	profile := config.ClientProfileConfig{Name: "sample", Rules: cfg.Rules, RequestBody: cfg.RequestBody}
 	cfg.Clients.Profiles = []config.ClientProfileConfig{profile}
-	err, logs, served := runBindRootStartup(t, cfg)
+	logs, served, err := runBindRootStartup(t, cfg)
 	if err != nil || !served {
 		t.Fatalf("existing roots rejected: %v served=%v", err, served)
 	}
@@ -156,7 +156,7 @@ func strictBindStartup(t *testing.T, profile bool) {
 	} else {
 		cfg.RequestBody = body
 	}
-	err, logs, served := runBindRootStartup(t, cfg)
+	logs, served, err := runBindRootStartup(t, cfg)
 	if err == nil || served {
 		t.Fatalf("missing strict root admitted: err=%v served=%v", err, served)
 	}
@@ -181,7 +181,7 @@ func TestBindRootsStartupWarningOnlyProfile(t *testing.T) {
 	profile := config.ClientProfileConfig{Name: "sample", Rules: cfg.Rules}
 	profile.RequestBody.ContainerCreate.AllowedBindMounts = []string{missing}
 	cfg.Clients.Profiles = []config.ClientProfileConfig{profile}
-	err, logs, served := runBindRootStartup(t, cfg)
+	logs, served, err := runBindRootStartup(t, cfg)
 	if err != nil || !served {
 		t.Fatalf("non-opt-in profile narrowed: %v served=%v", err, served)
 	}
@@ -193,7 +193,7 @@ func TestBindRootsStartupLibpodStaysWarningWithStrictDocker(t *testing.T) {
 	cfg.RequestBody.ContainerCreate.ApplyWorkspaceExceptions = true
 	missing := filepath.Join(t.TempDir(), "missing")
 	cfg.RequestBody.LibpodContainerCreate.AllowedBindMounts = []string{missing}
-	err, logs, served := runBindRootStartup(t, cfg)
+	logs, served, err := runBindRootStartup(t, cfg)
 	if err != nil || !served {
 		t.Fatalf("libpod warning promoted: %v served=%v", err, served)
 	}
@@ -228,7 +228,7 @@ func workspaceRootStartupFailure(t *testing.T, file, perRoot bool) {
 	} else {
 		cfg.WorkspaceExceptions.WorkspaceRoot = bad
 	}
-	err, logs, served := runBindRootStartup(t, cfg)
+	logs, served, err := runBindRootStartup(t, cfg)
 	if err == nil || served {
 		t.Fatalf("invalid directory admitted: err=%v served=%v", err, served)
 	}
@@ -244,7 +244,7 @@ func workspaceRootStartupFailure(t *testing.T, file, perRoot bool) {
 }
 
 func TestBindRootsStartupFeatureOff(t *testing.T) {
-	err, logs, served := runBindRootStartup(t, bindRootConfig(t, false))
+	logs, served, err := runBindRootStartup(t, bindRootConfig(t, false))
 	if err != nil || !served || logs.HasMessage("workspace root validation failed") {
 		t.Fatalf("feature off: %v served=%v logs=%+v", err, served, logs.Records())
 	}
@@ -267,7 +267,7 @@ func TestBindRootsStartupPermissionSeverity(t *testing.T) {
 	for _, strict := range []bool{false, true} {
 		cfg.RequestBody.ContainerCreate.ApplyWorkspaceExceptions = strict
 		cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{inaccessible}
-		err, logs, served := runBindRootStartup(t, cfg)
+		logs, served, err := runBindRootStartup(t, cfg)
 		if strict != (err != nil) || strict == served {
 			t.Fatalf("permission severity strict=%v err=%v served=%v", strict, err, served)
 		}
@@ -286,7 +286,7 @@ func TestBindRootsStartupPermissionSeverity(t *testing.T) {
 	}
 	cfg.RequestBody.ContainerCreate.AllowedBindMounts = nil
 	cfg.WorkspaceExceptions.WorkspaceRoot = inaccessible
-	err, _, served := runBindRootStartup(t, cfg)
+	_, served, err := runBindRootStartup(t, cfg)
 	if err == nil || served || !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "permission denied in the proxy mount namespace") || !strings.Contains(err.Error(), "mount it read-only at the same path") {
 		t.Fatalf("workspace permission diagnostic: %v served=%v", err, served)
 	}
@@ -312,9 +312,10 @@ func TestBindRootsReloadPreservesRunningGeneration(t *testing.T) {
 			body := initial.RequestBody
 			body.ContainerCreate.ApplyWorkspaceExceptions = true
 			body.ContainerCreate.AllowedBindMounts = []string{root, extra, bindOnly}
-			if guard == "profile" {
+			switch guard {
+			case "profile":
 				initial.Clients.Profiles = []config.ClientProfileConfig{{Name: "sample", Rules: initial.Rules, RequestBody: body}}
-			} else if guard == "base" {
+			case "base":
 				initial.RequestBody = body
 			}
 			f := newReloadCoordinatorFixture(t, initial)
@@ -436,7 +437,7 @@ func TestBindRootsStartupReusesWorkspaceSocketAndComposeRoots(t *testing.T) {
 	cfg.WorkspaceExceptions.PerWorkspaceRoots = roots
 	cfg.RequestBody.ContainerCreate.ApplyWorkspaceExceptions = true
 	cfg.RequestBody.ContainerCreate.AllowedBindMounts = roots
-	err, logs, served := runBindRootStartup(t, cfg)
+	logs, served, err := runBindRootStartup(t, cfg)
 	if err != nil || !served || logs.HasMessage("bind root visibility check failed") {
 		t.Fatalf("valid shared roots rejected: %v served=%v", err, served)
 	}
@@ -444,7 +445,7 @@ func TestBindRootsStartupReusesWorkspaceSocketAndComposeRoots(t *testing.T) {
 		if err := os.Remove(root); err != nil {
 			t.Fatal(err)
 		}
-		err, _, served = runBindRootStartup(t, cfg)
+		_, served, err = runBindRootStartup(t, cfg)
 		if err == nil || served || !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "mount it read-only at the same path") {
 			t.Fatalf("missing shared root admitted: %v served=%v", err, served)
 		}
@@ -461,7 +462,7 @@ func TestBindRootsStartupOtherLookupErrorIsNotMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{filepath.Join(file, "child")}
-	err, logs, served := runBindRootStartup(t, cfg)
+	logs, served, err := runBindRootStartup(t, cfg)
 	if err != nil || !served {
 		t.Fatalf("non-opt-in lookup error restricted: %v served=%v", err, served)
 	}
@@ -482,7 +483,7 @@ func TestBindRootsStartupServiceAndPluginExcluded(t *testing.T) {
 	cfg.RequestBody.Plugin.AllowedBindMounts = []string{missing}
 	profile := config.ClientProfileConfig{Name: "sample", Rules: cfg.Rules, RequestBody: cfg.RequestBody}
 	cfg.Clients.Profiles = []config.ClientProfileConfig{profile}
-	err, logs, served := runBindRootStartup(t, cfg)
+	logs, served, err := runBindRootStartup(t, cfg)
 	if err != nil || !served || logs.HasMessage("bind root visibility check failed") {
 		t.Fatalf("out-of-scope roots checked: %v served=%v records=%+v", err, served, logs.Records())
 	}
