@@ -45,9 +45,9 @@ func (p containerCreatePolicy) inspectWithWorkspaceExceptions(logger *slog.Logge
 	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" {
 		return p.inspect(logger, r, normalizedPath)
 	}
-	// The snapshot is taken before the body is read, so a replace that
-	// lands while the body streams in does not change this request.
-	snap := p.workspaceExceptions.Load()
+	// Composed requests retain the snapshot captured before all body readers,
+	// including admission mutation. A direct call captures at its own entry.
+	snap := p.requestWorkspaceSnapshot(r)
 	// The workspace comes from the request headers, before the body is
 	// read: a create without a valid workspace is denied whatever it
 	// carries, an empty or unreadable body included.
