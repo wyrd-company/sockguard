@@ -342,6 +342,31 @@ func TestWorkspaceExceptionGrantsOpenOnlyTheirGate(t *testing.T) {
 	}
 }
 
+// Grants never open settings outside the grant table: the require_*
+// hardening, required labels and resource limits keep their base values, and
+// the workspace mount itself needs the base bind allowlist.
+func TestWorkspaceExceptionLeavesOtherSettingsAlone(t *testing.T) {
+	h := newWSHarness(t, func(f workspaceExceptionsFixture) []map[string]any {
+		return []map[string]any{workspaceEntryDoc(f.alpha, fullWorkspaceGrants())}
+	})
+	for name, tc := range map[string]struct {
+		base func(*ContainerCreateOptions)
+		want string
+	}{
+		"require_non_root_user":          {func(o *ContainerCreateOptions) { o.RequireNonRootUser = true }, "non-root"},
+		"require_no_new_privileges":      {func(o *ContainerCreateOptions) { o.RequireNoNewPrivileges = true }, "no-new-privileges"},
+		"required_labels":                {func(o *ContainerCreateOptions) { o.RequiredLabels = []string{"sample.owner"} }, "required label"},
+		"require_memory_limit":           {func(o *ContainerCreateOptions) { o.RequireMemoryLimit = true }, "memory limit"},
+		"workspace root not allowlisted": {func(o *ContainerCreateOptions) { o.AllowedBindMounts = []string{h.f.outside} }, "is not allowlisted"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := wsRequest(h.f.alpha, map[string]any{"Privileged": true})
+			h.admit(h.options(nil), req)
+			h.deny(h.options(tc.base), req, tc.want)
+		})
+	}
+}
+
 func fullWorkspaceGrants() map[string]any {
 	return map[string]any{
 		"privileged": true, "capAdd": []string{"ALL"}, "namespaces": []string{"pid", "ipc", "network", "userns", "cgroupns"},
