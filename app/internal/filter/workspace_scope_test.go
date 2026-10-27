@@ -260,11 +260,10 @@ func TestWorkspaceLabelsAgreeWithHeader(t *testing.T) {
 	h.admit(opts, withHeader(nil))
 	h.admit(opts, withHeader(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}))
 	h.deny(opts, withHeader(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha, WorkspaceThrowawayLabel: h.f.alpha}), "workspace kind")
-	// The grant follows the header: a privileged create for alpha with no
-	// label is matched.
+	// Header identity alone does not give an unlabeled container grants.
 	priv := withHeader(nil)
 	priv.hostConfig["Privileged"] = true
-	h.admit(opts, priv)
+	h.deny(opts, priv, "privileged containers are not allowed")
 }
 
 func TestWorkspaceBothHeadersDenied(t *testing.T) {
@@ -522,6 +521,7 @@ func TestWorkspaceScopeComposeStagingRoot(t *testing.T) {
 	// agreement, so a staged bind keeps the exception with no
 	// extraBindSources entry; the throwaway header still never grants.
 	priv := staged(WorkspaceHeader, f.alpha)
+	priv.labels = map[string]string{WorkspaceLocalFolderLabel: f.alpha}
 	priv.hostConfig["Privileged"] = true
 	h.admit(opts, priv)
 	privThrowaway := staged(WorkspaceThrowawayHeader, f.alpha)

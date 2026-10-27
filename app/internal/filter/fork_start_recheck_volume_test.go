@@ -258,7 +258,7 @@ func TestForkStartRecheckVolumeParticipatesInExceptionMatch(t *testing.T) {
 	p.ContainerCreate.AllowedBindMounts = []string{f.ws, f.outside}
 	set := func(sources []string, device string) {
 		setStartVolume(t, f.forkStartRecheckFixture, "local", map[string]string{"o": "bind", "device": device})
-		body := ForkStartRecheckContainer{Mounts: []ForkStartRecheckMount{{Type: "volume", Name: "data"}}}
+		body := ForkStartRecheckContainer{Config: ForkStartRecheckConfig{Labels: map[string]string{WorkspaceLocalFolderLabel: f.alpha}}, Mounts: []ForkStartRecheckMount{{Type: "volume", Name: "data"}}}
 		for _, source := range sources {
 			body.Mounts = append(body.Mounts, bindMount(source))
 		}

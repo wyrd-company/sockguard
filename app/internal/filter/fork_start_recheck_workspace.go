@@ -1,3 +1,6 @@
+// relationships:
+//
+// references: [../../../docs/content/docs/workspace-exceptions]
 package filter
 
 import (
@@ -15,8 +18,9 @@ import (
 // W; and each bind source, as written and after resolution, must stay inside
 // W's folders under the per-workspace roots, inside the base allowlist
 // elsewhere, or inside one of W's extra bind sources. Extra bind sources are
-// exceptions and apply only to a devcontainer: a throwaway workspace header,
-// or a throwaway label on the container, gets no extra bind source.
+// exceptions and require the devcontainer header plus a matching primary
+// label on the inspected container. Unlabeled and throwaway containers get
+// only the base scope, even with an own-workspace bind.
 
 // Reason codes of the workspace scope. A deny reason never quotes a header
 // value.
@@ -96,7 +100,7 @@ func (p forkStartRecheckPolicy) denyWorkspace(subject string, workspace ForkStar
 	if err != nil {
 		return forkStartRecheckWorkspaceInvalid(subject)
 	}
-	if workspace.Throwaway {
+	if workspace.Throwaway || container.Config.Labels[WorkspaceLocalFolderLabel] != workspace.Path {
 		scope.ExtraBindSources = nil
 	}
 	allowed := newForkStartRecheckWorkspaceAllowed(scope, p.workspaceBase)

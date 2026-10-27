@@ -187,10 +187,13 @@ opposite-kind labels. Exec has a separate, stronger target-label rule.
 Every bind source and local-volume bind device must stay inside `W`'s own
 folder under every `per_workspace_roots` entry, or follow the base allowlist
 outside those roots. Extra bind sources apply only under the devcontainer
-header when the current inspected container passes the current exceptions
+header with `devcontainer.local_folder` present and byte-equal to `W`,
+when the current inspected container passes the current exceptions
 snapshot's create-equivalent match: a valid entry, a workspace bind mount,
 and agreement of every inspected source. A named volume alone does not
-supply the required workspace bind mount. Throwaway requests get no extras.
+supply the required workspace bind mount. Unlabeled BASE start/restart
+remains allowed, but unlabeled and throwaway requests get no extras, even
+with an own-`W` bind.
 Own socket and staging folders count as inside `W`. Base and extra entries
 are resolved like create allowlists; `W`'s folders are never resolved as
 allowlist entries. See [Workspace identity](/workspace-exceptions#workspace-identity).
