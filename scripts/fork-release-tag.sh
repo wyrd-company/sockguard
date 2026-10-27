@@ -14,6 +14,9 @@
 #   - the newest stable upstream release in that commit's history is v<base>;
 #   - the counter is the next one for that base, starting at 1;
 #   - no fork tag on a newer base exists, so `latest` only moves forward.
+# The release workflow serializes verification and publishing across every
+# tag and manual run, fetching current fork tags after admission. These checks
+# therefore apply even when an older run is admitted after a newer release.
 #
 # Run in a checkout with full history and the fork's tags. Reads upstream's
 # tags from FORK_UPSTREAM_URL into refs/upstream-tags/, a namespace only this
