@@ -111,6 +111,18 @@ func TestWorkspaceScopeExtraBindSources(t *testing.T) {
 	h.admit(opts, scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}, h.f.alpha+":/w", shared+":/shared"))
 	// The grant is alpha's: gamma may not use it.
 	h.deny(opts, scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.gamma}, h.f.gamma+":/w", shared+":/shared"), "outside this workspace's folder")
+	// A throwaway request is scoped by alpha's extras too, but they do not
+	// widen its allowlist: an extra outside the base allowlist stays denied.
+	throwaway := map[string]string{WorkspaceThrowawayLabel: h.f.alpha}
+	h.admit(opts, scopedRequest(throwaway, shared+":/shared"))
+	extra := filepath.Join(h.f.base, "extra")
+	if err := os.MkdirAll(extra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeAtomic(t, h.f.file, mustJSON(t, workspaceDoc(workspaceEntryDoc(h.f.alpha, map[string]any{"extraBindSources": []string{shared, extra}}))))
+	h.store.Reload()
+	h.admit(opts, scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}, h.f.alpha+":/w", extra+":/extra"))
+	h.deny(opts, scopedRequest(throwaway, extra+":/extra"), "is not allowlisted")
 }
 
 // The throwaway label scopes binds like devcontainer.local_folder and never
