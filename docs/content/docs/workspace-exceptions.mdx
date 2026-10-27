@@ -36,13 +36,13 @@ directory read-only and never writes the file.
 workspace_exceptions:
   file: /etc/sockguard/exceptions/workspace-exceptions.json
   workspace_root: /srv/workspaces
-  per_workspace_roots: ["/srv/workspaces", "/srv/workspace-sockets"]
+  per_workspace_roots: ["/srv/workspaces", "/srv/workspace-sockets", "/srv/compose-staging"]
 clients:
   profiles:
     - name: menagerie
       request_body:
         container_create:
-          allowed_bind_mounts: ["/srv/workspaces", "/srv/workspace-sockets", "/srv/template-cache"]
+          allowed_bind_mounts: ["/srv/workspaces", "/srv/workspace-sockets", "/srv/compose-staging", "/srv/template-cache"]
           apply_workspace_exceptions: true
           require_no_restart_policy: true
 ```
@@ -249,8 +249,8 @@ to workspace `/srv/workspaces/alpha`.
 A host path under a per-workspace root `R` must be inside `R/<basename W>`
 (the last element of the workspace key) or, when the exception applies,
 inside one of `W`'s `extraBindSources`. Host paths outside every
-per-workspace root, such as a template cache folder or a Compose staging
-folder, follow the base allowlist as before.
+per-workspace root, such as a template cache folder, follow the base
+allowlist as before.
 
 - The rule applies to every create in the block, whether or not an entry
   matches and whether or not the file is valid: the roots come from the
@@ -369,10 +369,16 @@ bind-source agreement and per-workspace roots.
 - The Compose project name and working folder are chosen by configuration
   and are never identity.
 - Compose configs and secrets are bind-mounted read-only from the staging
-  folder (devcontainer-builder `UserDataFolder`). That folder must be in
-  `allowed_bind_mounts` and must be at the same path for the daemon host and
-  for the client. A service that mounts a staged config or secret matches only
-  when the staging folder is in its entry's `extraBindSources`.
+  folder (devcontainer-builder `UserDataFolder`). The staging root is a
+  per-workspace root: the workspace manager sets `UserDataFolder` to
+  `<staging root>/<basename W>` for each job, so staged config and secret
+  binds are scoped to `W`'s own staging folder, under either header, and a
+  request for another workspace cannot reach them. The staging root must be
+  in `per_workspace_roots` and `allowed_bind_mounts`, at the same path for the
+  daemon host and the proxy.
+- `W`'s staging folder is not inside `W`, so under the bind agreement rule a
+  service that mounts a staged config or secret matches an exception only
+  when `<staging root>/<basename W>` is in its entry's `extraBindSources`.
 - `restart:` goes through `require_no_restart_policy` and the `restartPolicy`
   grant.
 - `extra_hosts` and `group_add` are always denied. Static network addresses
