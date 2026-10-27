@@ -14,18 +14,19 @@ directory read-only and never writes the file.
 
 ## Scope
 
-- The file affects only Docker-compat `POST /containers/create`, with any API
-  version prefix.
+- The file grants create settings on Docker-compat `POST /containers/create`,
+  with any API version prefix. Its extra bind sources also govern start and
+  restart after the inspected container passes the current exception match.
 - Libpod create, service create and update, plugin routes, exec create and
   start, `POST /containers/{id}/update` and BuildKit never get exceptions.
   Their own settings apply.
 - An exception only opens gates. It never closes a gate that the base policy
   opens.
-- In a block with `apply_workspace_exceptions`, every create, exec create and
-  exec start must name its workspace in a header. Exec also inspects the target
+- In a block with `apply_workspace_exceptions`, every create, start, restart,
+  exec create and exec start must name its workspace in a header. Exec also inspects the target
   container and requires its same-kind workspace label to equal the header.
-  Every create has its binds under a per-workspace root scoped to that
-  workspace. See
+  Every create, start and restart has its bind sources, including local-volume
+  bind devices, under a per-workspace root scoped to that workspace. See
   [Workspace identity](#workspace-identity) and
   [Per-workspace roots](#per-workspace-roots). These are the rules of the
   feature that deny a request the base policy admits. They apply only to
@@ -218,11 +219,16 @@ The header names are fixed; there is no setting for them.
   they grant no exec permissions.
 - These requests are denied without a valid header:
   - Docker-compat `POST /containers/create`;
-  - exec create and exec start, Docker-compat and libpod.
-- Container start and restart belong to the start re-check (see
-  [Re-check at start and restart](/symlink-bind-sources#re-check-at-start-and-restart)).
-  It reads the same headers, with the same reader, once its workspace scope
-  is set; the store provides that scope.
+  - exec create and exec start, Docker-compat and libpod;
+  - container start and restart, Docker-compat and libpod, with any version prefix.
+- Container start and restart inspect the container and apply the same
+  label-kind rule as create: the same-kind label may be absent or exactly
+  `W`; the opposite-kind label must be absent. Bind sources and local-volume
+  bind devices are re-checked under `W`'s scope. Extra bind sources apply
+  only if the current inspected container passes the current snapshot's
+  create-equivalent match, including a workspace bind mount and agreement
+  of every inspected source. A volume alone is not a workspace bind mount.
+  See [Re-check at start and restart](/symlink-bind-sources#re-check-at-start-and-restart).
 - `/grpc` and `/session` (BuildKit) need no header: no container is created
   there.
 - Deny reasons name the cause and never quote a header value:
@@ -319,8 +325,9 @@ through the archive API; it is not a bind source or a proxy mount.
 - Exceptions never change rules (method and path), the `require_*` hardening
   settings other than `require_no_restart_policy`, resource limits,
   `required_labels`, image trust, namespace-sharing restrictions, rollout
-  mode, rate and concurrency limits, response visibility, ownership, or any
-  endpoint other than container create.
+  mode, rate and concurrency limits, response visibility, ownership, or other
+  endpoints' settings. Only matched extra bind sources carry into
+  start and restart.
 - The workspace mount itself is checked against `allowed_bind_mounts`, so the
   workspace root must be in that list.
 
@@ -380,8 +387,10 @@ reloader, and runs whether or not `reload.enabled` is set.
   followed by a broken write must not leave the revoked grants in force. Each
   invalid load gives an error log with the cause and a
   `sockguard_workspace_exceptions_loads_total{result="invalid"}` count.
-- A revocation applies to later creates only. An existing container keeps its
-  settings until it is recreated.
+- A revocation applies to later creates and removes extra bind sources from
+  later start/restart matches. An existing container keeps its other create
+  settings until it is recreated. Each start/restart reads the current
+  snapshot once for identity scope and matching after inspecting its sources.
 
 ## Compose services
 
@@ -454,7 +463,7 @@ exception` line with:
   the entry's `workspace`: the resolved root plus the folder name.
 - The workspace manager sets the header on the Docker client it uses for a
   workspace. A client it does not control (a build helper's own client, for
-  example) gets no create or exec in the profile.
+  example) gets no create, start, restart or exec in the profile.
 - Keep a bind-type workspace mount. A create that mounts the workspace only
   through a named volume does not match.
 - Containers that should never get an exception, such as command containers

@@ -498,6 +498,32 @@ container through the archive API, so the cache does not need an
   `permission denied` and the create, start or restart is denied, fail-closed. The proxy needs
   search (`x`) permission on every per-workspace root path and its parents.
 
+## Start and restart workspace checks
+
+In a profile with `container_create.apply_workspace_exceptions`, Docker and
+libpod container start/restart require one valid workspace header, including
+versioned routes. The inspected container follows create's label-kind rule:
+its same-kind label may be absent or exactly `W`, and its opposite-kind label
+must be absent. Exec retains its separate mandatory target-label rule.
+
+The proxy reads container inspect and `GET /volumes/{name}` for each named
+volume mount through its shared upstream resolver. Local-volume bind devices
+and bind sources are scoped to `W`'s own folders under every per-workspace
+root. Extra bind sources require a current create-equivalent match of the
+inspected container, including a workspace bind mount; throwaway requests
+get none. Client rules need not allow the proxy's internal inspect requests.
+A failed volume lookup denies with `container_start_volume_inspect_failed`,
+without logging driver-option values. Profiles without the opt-in retain
+the no-narrowing rule and ignore workspace headers.
+
+Local-volume device re-resolution at daemon start is inferred, not measured
+here. Acceptance owns an unchanged control, swapped-device proxy denial and
+an observable direct-daemon control in owned temporary paths, with the daemon
+and version recorded. Overlay upper/work directories, libpod rootfs/init_path,
+Podman-only init/pod/restore/kube routes, starts outside the proxy, and the
+lookup-to-start race remain documented gaps. See
+[Re-check at start and restart](content/docs/symlink-bind-sources.mdx#re-check-at-start-and-restart).
+
 ## Menagerie must avoid
 
 - Treating HTTP `/grpc` and `/session` admission as proof builds work or are

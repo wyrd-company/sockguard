@@ -725,6 +725,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// Fork-owned: container start and restart re-check their bind sources
 	// through the same resolver (filter/fork_start_recheck.go).
 	policy.ForkStartRecheck.InspectContainer = filter.NewForkStartRecheckInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
+	policy.ForkStartRecheck.InspectVolume = filter.NewForkStartRecheckVolumeInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
 	// insecure_allow_body_blind_writes is a global, not-per-profile setting
 	// (validateBodyBlindWriteRulesForPolicy in rules.go says as much), so it
 	// is wired here rather than through RequestBodyConfig.ToFilterOptions —

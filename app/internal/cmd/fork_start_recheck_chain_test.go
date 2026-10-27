@@ -56,11 +56,7 @@ func TestServeChainForkStartRecheckDeniesASwappedBindSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This package confines bind-source lookups to plain directories; this
-	// test needs the real filesystem under its own temporary root. The
-	// cleanup runs after the chain's own, so no request reads it afterwards.
-	bindfs.ConfineForTests(func() []string { return []string{root} })
-	t.Cleanup(func() { bindfs.ConfineForTests(func() []string { return nil }) })
+	bindfs.RealRootForTest(t, root)
 	ws, outside := filepath.Join(root, "ws"), filepath.Join(root, "outside")
 	proj := filepath.Join(ws, "proj")
 	for _, dir := range []string{proj, outside} {

@@ -9,7 +9,8 @@ import (
 )
 
 // Every bind-source lookup is a plain directory, except where a test opens
-// its own temporary root (TestServeChainForkStartRecheckDeniesASwappedBindSource). A serve-chain test that names a
+// its own temporary root with bindfs.RealRootForTest, the only supported way
+// to open real lookups in this package. A serve-chain test that names a
 // host path ("/usr/libexec/podman/catatonit", "/srv/roots") then gets the
 // same result on every host, whatever is installed there.
 func init() {
