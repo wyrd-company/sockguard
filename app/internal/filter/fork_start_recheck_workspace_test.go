@@ -473,3 +473,13 @@ func TestForkStartRecheckWorkspaceAllowedPaths(t *testing.T) {
 		assertForwarded(t, sendWorkspace(t, policy, "/containers/c1/start", devcontainerHeader(f.alpha)))
 	})
 }
+
+// TestForkStartRecheckWorkspaceBaseHoldsBothAllowlists checks that a source
+// outside the roots may use either create allowlist under the workspace scope.
+func TestForkStartRecheckWorkspaceBaseHoldsBothAllowlists(t *testing.T) {
+	f := newForkStartRecheckWorkspaceFixture(t)
+	policy := f.forkStartRecheckFixture.policy([]string{f.ws}, []string{f.ws, f.outside})
+	policy.ForkStartRecheck.Workspace = f.scope
+	f.daemon.set(http.StatusOK, containerIn(t, []string{filepath.Join(f.outside, "sub")}))
+	assertForwarded(t, sendWorkspace(t, policy, "/containers/c1/start", devcontainerHeader(f.alpha)))
+}
