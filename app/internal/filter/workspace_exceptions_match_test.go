@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -604,5 +605,24 @@ func TestMatchWorkspaceExceptionAPI(t *testing.T) {
 	// The label value is matched byte-equal, not cleaned.
 	if m := MatchWorkspaceException(snap, WorkspaceExceptionRequest{Labels: map[string]string{WorkspaceLocalFolderLabel: h.f.alpha + "/"}, Binds: []string{h.f.alpha + ":/w"}}); m.Outcome != WorkspaceExceptionNone {
 		t.Fatalf("trailing slash label: %+v", m)
+	}
+}
+
+// Two effective policies built from one base policy do not share list
+// storage: a request for one workspace never sees another's extra bind
+// sources. The duplicate base entry leaves spare capacity in the base list.
+func TestWithWorkspaceGrantsDoesNotShareBaseSlices(t *testing.T) {
+	base := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: []string{"/srv/a", "/srv/a", "/srv/b"}})
+	if cap(base.allowedBindMounts) <= len(base.allowedBindMounts) {
+		t.Fatalf("fixture needs spare capacity: len %d cap %d", len(base.allowedBindMounts), cap(base.allowedBindMounts))
+	}
+	req := &containerCreateRequest{}
+	first := base.withWorkspaceGrants(workspaceGrants{extraBindSources: []string{"/srv/extra-one"}}, req)
+	second := base.withWorkspaceGrants(workspaceGrants{extraBindSources: []string{"/srv/extra-two"}}, req)
+	if !slices.Contains(first.allowedBindMounts, "/srv/extra-one") || slices.Contains(first.allowedBindMounts, "/srv/extra-two") {
+		t.Fatalf("first effective list %v was changed by the second", first.allowedBindMounts)
+	}
+	if !slices.Contains(second.allowedBindMounts, "/srv/extra-two") || len(base.allowedBindMounts) != 2 {
+		t.Fatalf("second %v, base %v", second.allowedBindMounts, base.allowedBindMounts)
 	}
 }
