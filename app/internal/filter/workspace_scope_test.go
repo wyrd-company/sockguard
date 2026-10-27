@@ -223,11 +223,11 @@ func TestWorkspaceScopeThrowawayLabel(t *testing.T) {
 }
 
 // The throwaway header never grants, even with an entry for W that grants
-// privileged, and even when the container carries the devcontainer label.
+// privileged. Labels are valid for the header kind so they cannot mask it.
 func TestWorkspaceThrowawayHeaderNeverGrants(t *testing.T) {
 	h, sockets := newScopeHarness(t, privilegedGrant)
 	opts := h.scopeOptions(sockets, nil)
-	for _, labels := range []map[string]string{nil, {WorkspaceLocalFolderLabel: h.f.alpha}, {WorkspaceThrowawayLabel: h.f.alpha}} {
+	for _, labels := range []map[string]string{nil, {WorkspaceThrowawayLabel: h.f.alpha}} {
 		req := scopedRequest(labels, h.f.alpha+":/w")
 		req.hostConfig["Privileged"] = true
 		req.headers = map[string][]string{WorkspaceThrowawayHeader: {h.f.alpha}}
@@ -237,8 +237,7 @@ func TestWorkspaceThrowawayHeaderNeverGrants(t *testing.T) {
 	}
 }
 
-// devcontainer.local_folder and menagerie.throwaway.workspace must be absent
-// or equal the header's workspace.
+// Only a same-kind label may be present; it must equal the header's workspace.
 func TestWorkspaceLabelsAgreeWithHeader(t *testing.T) {
 	h, sockets := newScopeHarness(t, privilegedGrant)
 	opts := h.scopeOptions(sockets, nil)
@@ -247,7 +246,7 @@ func TestWorkspaceLabelsAgreeWithHeader(t *testing.T) {
 		req.headers = map[string][]string{WorkspaceHeader: {h.f.alpha}}
 		return req
 	}
-	for _, label := range []string{WorkspaceLocalFolderLabel, WorkspaceThrowawayLabel} {
+	for _, label := range []string{WorkspaceLocalFolderLabel} {
 		for name, value := range map[string]string{"another workspace": h.f.beta, "trailing slash": h.f.alpha + "/", "empty": ""} {
 			t.Run(label+" "+name, func(t *testing.T) {
 				h := h.with(t)
@@ -260,7 +259,7 @@ func TestWorkspaceLabelsAgreeWithHeader(t *testing.T) {
 	}
 	h.admit(opts, withHeader(nil))
 	h.admit(opts, withHeader(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}))
-	h.admit(opts, withHeader(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha, WorkspaceThrowawayLabel: h.f.alpha}))
+	h.deny(opts, withHeader(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha, WorkspaceThrowawayLabel: h.f.alpha}), "workspace kind")
 	// The grant follows the header: a privileged create for alpha with no
 	// label is matched.
 	priv := withHeader(nil)

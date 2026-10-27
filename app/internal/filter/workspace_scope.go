@@ -24,9 +24,8 @@ import (
 // code that admits them. It runs after the effective policy has admitted the
 // request, so a failure here is a scoping failure and nothing else.
 
-// WorkspaceThrowawayLabel is the label a command container may carry. When
-// present it must equal the request's workspace, as devcontainer.local_folder
-// must.
+// WorkspaceThrowawayLabel is the label a command container may carry under
+// the throwaway header. When present it must equal the request's workspace.
 const WorkspaceThrowawayLabel = "menagerie.throwaway.workspace"
 
 // The request headers that name the workspace W. The workspace manager sets
@@ -126,15 +125,25 @@ func checkWorkspaceIdentity(workspace string, snap *WorkspaceExceptionSnapshot) 
 	return cause == ""
 }
 
-// workspaceLabelDenyReason requires each identity label to be absent or equal
-// W. The reason names the label, not its value.
+// workspaceLabelDenyReason requires the same-kind label to be absent or equal
+// W, and the opposite-kind label to be absent. The reason names the label,
+// not its value.
 func workspaceLabelDenyReason(labels map[string]string, id WorkspaceIdentity, subject string) string {
-	for _, label := range []string{WorkspaceLocalFolderLabel, WorkspaceThrowawayLabel} {
-		if value, ok := labels[label]; ok && value != id.Workspace {
-			return subject + " denied: workspace label " + label + " disagrees with the request's workspace"
-		}
+	label, opposite := workspaceIdentityLabels(id)
+	if _, present := labels[opposite]; present {
+		return subject + " denied: workspace label " + opposite + " disagrees with the request's workspace kind"
+	}
+	if value, present := labels[label]; present && value != id.Workspace {
+		return subject + " denied: workspace label " + label + " disagrees with the request's workspace"
 	}
 	return ""
+}
+
+func workspaceIdentityLabels(id WorkspaceIdentity) (same, opposite string) {
+	if id.Kind == WorkspaceIdentityThrowaway {
+		return WorkspaceThrowawayLabel, WorkspaceLocalFolderLabel
+	}
+	return WorkspaceLocalFolderLabel, WorkspaceThrowawayLabel
 }
 
 func (s *WorkspaceExceptionSnapshot) workspaceRoot() string {

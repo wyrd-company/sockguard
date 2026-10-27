@@ -4,6 +4,7 @@
 package filter
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,16 @@ func TestForkExecWorkspaceHeader(t *testing.T) {
 	serve := func(apply bool, path string, header http.Header) (int, string) {
 		cfg := PolicyConfig{ContainerCreate: h.options(func(o *ContainerCreateOptions) { o.ApplyWorkspaceExceptions = apply })}
 		cfg.Exec.AllowAnyCommand = true
+		cfg.ForkStartRecheck.InspectContainer = func(context.Context, string) (ForkStartRecheckContainer, error) {
+			label := WorkspaceLocalFolderLabel
+			if header.Get(WorkspaceThrowawayHeader) != "" {
+				label = WorkspaceThrowawayLabel
+			}
+			return ForkStartRecheckContainer{Config: ForkStartRecheckConfig{Labels: map[string]string{label: h.f.alpha}}}, nil
+		}
+		cfg.Exec.InspectStart = func(context.Context, string) (ExecInspectResult, bool, error) {
+			return ExecInspectResult{ContainerID: "sample", Command: []string{"true"}, User: "1000"}, true, nil
+		}
 		cfg.DenyResponseVerbosity = DenyResponseVerbosityVerbose
 		handler := MiddlewareWithOptions(rules, testLogger(), Options{PolicyConfig: cfg})(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
@@ -53,9 +64,8 @@ func TestForkExecWorkspaceHeader(t *testing.T) {
 					t.Fatalf("deny reason quotes the header: %s", body)
 				}
 			}
-			// With a valid header the request reaches the exec inspector:
-			// exec create is admitted by allow_any_command; exec start then
-			// needs the daemon, which this test does not provide.
+			// With a valid header and matching target the request reaches
+			// the exec body inspector.
 			if code, body := serve(true, path, valid); strings.Contains(body, "workspace") {
 				t.Fatalf("valid header: status %d body %s", code, body)
 			}

@@ -22,8 +22,10 @@ directory read-only and never writes the file.
 - An exception only opens gates. It never closes a gate that the base policy
   opens.
 - In a block with `apply_workspace_exceptions`, every create, exec create and
-  exec start must name its workspace in a header, and every create has its
-  binds under a per-workspace root scoped to that workspace. See
+  exec start must name its workspace in a header. Exec also inspects the target
+  container and requires its same-kind workspace label to equal the header.
+  Every create has its binds under a per-workspace root scoped to that
+  workspace. See
   [Workspace identity](#workspace-identity) and
   [Per-workspace roots](#per-workspace-roots). These are the rules of the
   feature that deny a request the base policy admits. They apply only to
@@ -193,9 +195,19 @@ The header names are fixed; there is no setting for them.
 - `W` must follow the workspace key rules: absolute, clean, a direct child of
   `workspace_root`, and a canonical directory. Otherwise the request is
   denied.
-- `devcontainer.local_folder` and `menagerie.throwaway.workspace` on the
-  container must each be absent or equal `W`. Otherwise the request is denied
-  with `workspace label <label> disagrees with the request's workspace`.
+- Under `X-Sockguard-Workspace`, `menagerie.throwaway.workspace` must be
+  absent and `devcontainer.local_folder` must be absent or exactly `W`.
+- Under `X-Sockguard-Throwaway-Workspace`, `devcontainer.local_folder` must
+  be absent and `menagerie.throwaway.workspace` must be absent or exactly `W`.
+  Both labels together are denied, even when both equal `W`. An empty label
+  is present. A label of the wrong kind is denied with
+  `workspace label <label> disagrees with the request's workspace kind`.
+- Exec create and exec start inspect the target container. Its same-kind
+  workspace label must be present and exactly `W`; a target with neither
+  label, a mismatched value, or an opposite-kind label is denied. Exec start
+  resolves the target through exec inspect first. Missing targets and failed
+  lookups are denied. These checks apply to Docker-compat and libpod exec;
+  they grant no exec permissions.
 - These requests are denied without a valid header:
   - Docker-compat `POST /containers/create`;
   - exec create and exec start, Docker-compat and libpod.
