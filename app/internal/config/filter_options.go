@@ -129,6 +129,8 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenySelinuxLabelOverride:          c.DenySelinuxLabelOverride,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
+		ApplyWorkspaceExceptions:          c.ApplyWorkspaceExceptions,
+		RequireNoRestartPolicy:            c.RequireNoRestartPolicy,
 	}
 }
 

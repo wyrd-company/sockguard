@@ -84,6 +84,9 @@ type Registry struct {
 	throttles     sync.Map // map[throttleLabels]*atomic.Uint64
 	configReloads sync.Map // map[configReloadLabels]*atomic.Uint64
 
+	// workspaceExceptionsLoads is fork-owned; see workspace_exceptions.go.
+	workspaceExceptionsLoads sync.Map // map[workspaceExceptionsLoadLabels]*atomic.Uint64
+
 	// listenerUp holds the current sockguard_listener_up gauge value (1 or 0)
 	// per listener identity (#149). Entries are created by SetListenerUp on
 	// first use and never removed — the listener set is operator-configured
@@ -618,6 +621,8 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 		fmt.Fprintln(w, "# TYPE sockguard_policy_version gauge")
 		fmt.Fprintf(w, "sockguard_policy_version %d\n", policyVersion)
 	}
+
+	r.writeWorkspaceExceptionsMetrics(w)
 }
 
 func sortedConfigReloadLabels(values map[configReloadLabels]uint64) []configReloadLabels {

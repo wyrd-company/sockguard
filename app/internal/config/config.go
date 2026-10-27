@@ -105,6 +105,9 @@ type Config struct {
 	InsecureAllowBodyBlindWrites  bool               `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool               `mapstructure:"insecure_allow_read_exfiltration"`
 
+	// WorkspaceExceptions is fork-owned; see workspace_exceptions.go.
+	WorkspaceExceptions WorkspaceExceptionsConfig `mapstructure:"workspace_exceptions"`
+
 	// explicitLegacyListen records whether the legacy listen.* fields were
 	// set explicitly — a YAML key, a SOCKGUARD_LISTEN_* environment
 	// variable, or the --listen-socket CLI flag — as opposed to left at
@@ -660,6 +663,14 @@ type ContainerCreateRequestBodyConfig struct {
 	// Options entry can override that default per-mount, so it is denied
 	// unless explicitly allowed. Default false.
 	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
+
+	// Fork-owned (wyrd-company/sockguard); see workspace_exceptions.go.
+	// ApplyWorkspaceExceptions opts this block in to the workspace
+	// exceptions file. RequireNoRestartPolicy denies a
+	// HostConfig.RestartPolicy.Name other than "" or "no", unless a matched
+	// workspace exception grants it. Both default false.
+	ApplyWorkspaceExceptions bool `mapstructure:"apply_workspace_exceptions"`
+	RequireNoRestartPolicy   bool `mapstructure:"require_no_restart_policy"`
 }
 
 // LibpodContainerCreateRequestBodyConfig configures body inspection for
