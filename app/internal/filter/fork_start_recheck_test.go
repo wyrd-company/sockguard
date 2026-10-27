@@ -240,7 +240,7 @@ func TestForkStartRecheckSwapAfterCreateIsDenied(t *testing.T) {
 			assertForwarded(t, send(t, policy, http.MethodPost, route.path, ""))
 
 			f.swap("proj", f.outside)
-			assertDenied(t, send(t, policy, http.MethodPost, route.path, ""), forkStartRecheckReasonCodeBindSourceDenied,
+			assertDenied(t, send(t, policy, http.MethodPost, route.path, ""), "container_start_bind_source_denied",
 				route.subject+` denied: bind mount source "`+proj+`" resolves to "`+f.outside+`", which is not allowlisted`)
 
 			f.restore("proj")
@@ -306,7 +306,7 @@ func TestForkStartRecheckReadsEveryBindSourceField(t *testing.T) {
 			} else {
 				f.swap("proj", f.outside)
 			}
-			assertDenied(t, send(t, policy, http.MethodPost, "/containers/c1/start", ""), forkStartRecheckReasonCodeBindSourceDenied, tt.wantReason(f))
+			assertDenied(t, send(t, policy, http.MethodPost, "/containers/c1/start", ""), "container_start_bind_source_denied", tt.wantReason(f))
 		})
 	}
 }
@@ -356,7 +356,7 @@ func TestForkStartRecheckInspectFailureIsDenied(t *testing.T) {
 			} else {
 				f.daemon.set(tt.status, tt.body)
 			}
-			assertDenied(t, send(t, policy, http.MethodPost, "/containers/c1/start", ""), forkStartRecheckReasonCodeInspectFailed, reason)
+			assertDenied(t, send(t, policy, http.MethodPost, "/containers/c1/start", ""), "container_start_inspect_failed", reason)
 		})
 	}
 }
@@ -369,7 +369,7 @@ func TestForkStartRecheckLogsTheInspectCause(t *testing.T) {
 	var logs strings.Builder
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	got := sendLogged(t, logger, f.policy([]string{f.ws}, nil), http.MethodPost, "/containers/c1/start", "")
-	assertDenied(t, got, forkStartRecheckReasonCodeInspectFailed, `container start denied: container "c1" could not be inspected to re-check its bind sources`)
+	assertDenied(t, got, "container_start_inspect_failed", `container start denied: container "c1" could not be inspected to re-check its bind sources`)
 	for _, want := range []string{"level=WARN", "container start re-check: inspect failed", "upstream returned 500 Internal Server Error"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("log %q does not hold %q", logs.String(), want)
@@ -429,7 +429,10 @@ func TestForkStartRecheckNarrowsNothingCreateAllowed(t *testing.T) {
 			name:   "named volume and volume mount",
 			compat: func(f *forkStartRecheckFixture) []string { return []string{f.ws} },
 			body: func(f *forkStartRecheckFixture) string {
-				return inspectBody(t, []ForkStartRecheckMount{{Type: "volume", Source: f.outside}}, []string{"data:/data"}, []ForkStartRecheckMount{{Type: "volume", Source: "data"}})
+				// The volume entries name the swapped ws/proj, so only their
+				// type keeps them out of the re-check.
+				proj := filepath.Join(f.ws, "proj")
+				return inspectBody(t, []ForkStartRecheckMount{{Type: "volume", Source: proj}}, []string{"data:/data"}, []ForkStartRecheckMount{{Type: "volume", Source: proj}})
 			},
 			wantInspect: true,
 		},
@@ -534,7 +537,7 @@ func TestForkStartRecheckAllowlists(t *testing.T) {
 				subject = "libpod container start"
 			}
 			resolved := tt.target(f)
-			assertDenied(t, got, forkStartRecheckReasonCodeBindSourceDenied,
+			assertDenied(t, got, "container_start_bind_source_denied",
 				subject+` denied: bind mount source "`+proj+`" resolves to "`+resolved+`", which is not allowlisted`)
 		})
 	}
