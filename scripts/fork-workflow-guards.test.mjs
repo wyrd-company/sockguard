@@ -1,5 +1,17 @@
+// relationships:
+//   references: [../.github/workflows/fork-ci.yml]
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 
@@ -285,6 +297,113 @@ describe("fork-ci workflow", () => {
     return match[1].trimEnd();
   }
 
+  // Parse the literal run-step subset used by this job. Reject bypass fields
+  // rather than approximating their Actions semantics. No YAML dependency.
+  function acceptanceSteps() {
+    const job = parseJobs(readWorkflow(FILE), FILE).find((j) => j.name === "acceptance");
+    assert.ok(job, "acceptance job missing");
+    assert.doesNotMatch(
+      job.body,
+      /^ {4}continue-on-error:/mu,
+      "acceptance job must not ignore preparation failure",
+    );
+    const requested = job.body.match(/^ {6}ACCEPTANCE_DAEMON_IMAGE: (.+)$/mu)?.[1];
+    assert.equal(requested, "docker:29.9.2-dind");
+    const headers = [...job.body.matchAll(/^ {6}- name: (.+)$/gmu)];
+    const steps = headers.map((header, index) => {
+      const body = job.body.slice(header.index, headers[index + 1]?.index ?? job.body.length);
+      const run = body.match(/^ {8}run: \|\n((?:(?: {10}.*)?\n)*)/mu)?.[1];
+      return { name: header[1], body, run: run?.replace(/^ {10}/gmu, "") };
+    });
+    const prepare = steps.findIndex((step) => step.name === "Prepare acceptance bootstrap image");
+    const suite = steps.findIndex((step) => step.name === "Real daemon acceptance");
+    assert.ok(
+      prepare >= 0 && prepare < suite,
+      "bootstrap preparation must precede protected suite",
+    );
+    for (const step of [steps[prepare], steps[suite]]) {
+      assert.doesNotMatch(
+        step.body,
+        /^ {8}(?:if|continue-on-error):/mu,
+        "preparation and suite must use default success gating",
+      );
+      assert.ok(step.run, `${step.name}: literal run block missing`);
+    }
+    return { requested, steps: steps.filter((_, index) => index === prepare || index === suite) };
+  }
+
+  function runAcceptanceSetup(failPreparation) {
+    const plan = acceptanceSteps();
+    const root = mkdtempSync(resolve(tmpdir(), "acceptance-ci-"));
+    try {
+      mkdirSync(resolve(root, "bin"));
+      mkdirSync(resolve(root, "tests/acceptance"), { recursive: true });
+      const executable = (path, body) => {
+        writeFileSync(path, `#!/usr/bin/env bash\nset -eu\n${body}\n`);
+        chmodSync(path, 0o755);
+      };
+      executable(
+        resolve(root, "bin/docker"),
+        `
+printf '%s\\n' "$*" >> "$FIXTURE_ROOT/calls"
+[[ "$1" == pull ]]
+if [[ "$FAIL_PREPARATION" == 1 ]]; then echo 'bootstrap preparation failed' >&2; exit 9; fi
+touch "$FIXTURE_ROOT/prepared"`,
+      );
+      executable(
+        resolve(root, "tests/acceptance/run.sh"),
+        `
+test -f "$FIXTURE_ROOT/prepared"
+echo admitted >> "$FIXTURE_ROOT/calls"`,
+      );
+      const results = [];
+      for (const step of plan.steps) {
+        const result = spawnSync(
+          "bash",
+          ["--noprofile", "--norc", "-eo", "pipefail", "-c", step.run],
+          {
+            cwd: root,
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              PATH: `${root}/bin:${process.env.PATH}`,
+              FIXTURE_ROOT: root,
+              RUNNER_TEMP: `${root}/tmp`,
+              ACCEPTANCE_DAEMON_IMAGE: plan.requested,
+              FAIL_PREPARATION: failPreparation ? "1" : "0",
+            },
+          },
+        );
+        results.push(result);
+        if (result.status !== 0) break; // Actions' default success() step gate.
+      }
+      return {
+        results,
+        calls: readFileSync(resolve(root, "calls"), "utf8"),
+        preparation: readFileSync(resolve(root, "tmp/acceptance/bootstrap-prepare.log"), "utf8"),
+      };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("prepares the bootstrap prerequisite before protected admission using actual CI run steps", () => {
+    const r = runAcceptanceSetup(false);
+    assert.deepEqual(
+      r.results.map((result) => result.status),
+      [0, 0],
+    );
+    assert.equal(r.calls, "pull docker:29.9.2-dind\nadmitted\n");
+  });
+
+  it("a CI preparation failure prevents suite admission", () => {
+    const r = runAcceptanceSetup(true);
+    assert.equal(r.results.length, 1, "failed preparation must not admit the suite");
+    assert.equal(r.results[0].status, 9);
+    assert.match(r.preparation, /bootstrap preparation failed/u);
+    assert.equal(r.calls, "pull docker:29.9.2-dind\n");
+  });
+
   it("triggers only on push and pull_request for main, wyrd and epic/*", () => {
     const on = topLevelBlock(readWorkflow(FILE), "on");
     assert.equal(
@@ -370,10 +489,6 @@ describe("fork-ci workflow", () => {
 // The fork's own release workflow. It is the one workflow here that publishes,
 // so it is held to the release freeze's terms: GitHub-owned actions only, one
 // registry, no upstream names in the image, and a tag gate nothing can skip.
-const { spawnSync } = await import("node:child_process");
-const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
-const { tmpdir } = await import("node:os");
-
 describe("fork release workflow", () => {
   const FILE = "fork-release.yml";
   const RELEASE_STEP = "Verify release tag";

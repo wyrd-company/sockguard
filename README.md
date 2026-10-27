@@ -76,7 +76,7 @@
 - **BuildKit LLBBridge passthrough.** A client profile can set `request_body.buildkit.llb_bridge.allow_uninspected_passthrough` so that BuildKit SDK `client.Build` calls on `POST /grpc` are forwarded without inspection. The default is off, and the outer `Control/Solve` checks still apply. See [BuildKit LLBBridge passthrough](docs/content/docs/buildkit-llb-bridge.mdx).
 - **BuildKit deprecated exporter fields.** A `Control/Solve` whose deprecated exporter fields equal `Exporters[0]`, as the BuildKit SDK sends them, is admitted. Any other use of those fields is still refused.
 
-Automated fork acceptance runs with `make acceptance` against an owned Docker-in-Docker fixture. Default Go tests remain hermetic. The fork CI runs the suite on both Docker image stores. See [acceptance inputs, controls and evidence](tests/acceptance/README.md).
+Automated fork acceptance runs with `make acceptance` against an owned Docker-in-Docker fixture. First prepare its bootstrap image outside the wrapper with `docker pull docker:29.9.2-dind`; local operators own this prerequisite, while fork CI provisions it as ephemeral runner infrastructure. The wrapper requires the prepared image, pins its immutable ID and retains strict shared inventory checks. Default Go tests remain hermetic. The fork CI runs the suite on both Docker image stores. See [acceptance inputs, controls and evidence](tests/acceptance/README.md).
 
 <h2 align="center">Contents</h2>
 
