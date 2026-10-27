@@ -164,8 +164,8 @@ func TestForkStartRecheckWorkspaceLabelsMustMatch(t *testing.T) {
 				assertForwarded(t, got)
 				return
 			}
-			assertDenied(t, got, "container_start_workspace_label_mismatch",
-				`container start denied: container label "`+tt.mismatch+`" does not match the request's workspace`)
+			id, _ := WorkspaceFromHeaders(tt.header(f))
+			assertDenied(t, got, "container_start_workspace_label_mismatch", workspaceLabelDenyReason(mapLabels(labels), id, "container start"))
 			if strings.Contains(got.reason, f.alpha) || strings.Contains(got.reason, f.beta) {
 				t.Errorf("reason %q quotes a workspace path", got.reason)
 			}
@@ -240,7 +240,7 @@ func TestForkStartRecheckWorkspaceScopesBindSources(t *testing.T) {
 		}
 		f.daemon.set(http.StatusOK, containerIn(t, []string{link}))
 		assertDenied(t, sendWorkspace(t, f.policy(), "/containers/c1/start", devcontainerHeader(f.alpha)), "container_start_bind_source_outside_workspace",
-			`container start denied: bind mount source "`+link+`" cannot be resolved: dangling symlink at "`+filepath.Join(f.outside, "nope")+`"`)
+			`container start denied: bind mount source "`+link+`" is outside the request's workspace`)
 	})
 }
 
@@ -282,7 +282,7 @@ func TestForkStartRecheckWorkspaceExceptionsOnlyForADevcontainer(t *testing.T) {
 			if tt.alwaysExtras {
 				policy.ForkStartRecheck.Workspace = func(w ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error) {
 					w.Throwaway = false
-					return f.scope(w)
+					return f.store.ForkStartRecheckWorkspace(w)
 				}
 			}
 			source := filepath.Join(f.extra, "data", "sub")
@@ -290,8 +290,12 @@ func TestForkStartRecheckWorkspaceExceptionsOnlyForADevcontainer(t *testing.T) {
 			if tt.labels != nil {
 				labels = tt.labels(f)
 			}
-			f.daemon.set(http.StatusOK, containerIn(t, []string{source}, labels...))
+			f.daemon.set(http.StatusOK, containerIn(t, []string{f.alpha, source}, labels...))
 			got := sendWorkspace(t, policy, "/containers/c1/start", tt.header(f))
+			if tt.name == "throwaway label under the devcontainer header" {
+				assertDenied(t, got, "container_start_workspace_label_mismatch", "container start denied: workspace label menagerie.throwaway.workspace disagrees with the request's workspace kind")
+				return
+			}
 			if tt.denied {
 				assertDenied(t, got, "container_start_bind_source_outside_workspace",
 					`container start denied: bind mount source "`+source+`" is outside the request's workspace`)
@@ -304,7 +308,7 @@ func TestForkStartRecheckWorkspaceExceptionsOnlyForADevcontainer(t *testing.T) {
 			// allowlist entries are, so the swap is below it.
 			f.swapPath(source, f.outside)
 			assertDenied(t, sendWorkspace(t, policy, "/containers/c1/start", tt.header(f)), "container_start_bind_source_outside_workspace",
-				`container start denied: bind mount source "`+source+`" resolves to "`+f.outside+`", which is outside the request's workspace`)
+				`container start denied: bind mount source "`+source+`" is outside the request's workspace`)
 		})
 	}
 }
@@ -325,7 +329,7 @@ func TestForkStartRecheckWorkspaceDeniesSourcesNoAllowlistHolds(t *testing.T) {
 func TestForkStartRecheckWorkspaceProfileWithoutAllowlist(t *testing.T) {
 	f := newForkStartRecheckWorkspaceFixture(t)
 	policy := f.forkStartRecheckFixture.policy([]string{"/"}, nil)
-	policy.ForkStartRecheck.Workspace = f.scope
+	policy.ForkStartRecheck.Workspace = f.store.ForkStartRecheckWorkspace
 	source := filepath.Join(f.beta, "proj")
 	f.daemon.set(http.StatusOK, containerIn(t, []string{source}))
 	assertDenied(t, sendWorkspace(t, policy, "/containers/c1/start", devcontainerHeader(f.alpha)), "container_start_bind_source_outside_workspace",
@@ -358,7 +362,7 @@ func TestForkStartRecheckWorkspaceAllowedPaths(t *testing.T) {
 		}
 		policy := f.forkStartRecheckFixture.policy([]string{f.ws, link}, nil)
 		policy.ForkStartRecheck.Workspace = func(w ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error) {
-			scope, err := f.scope(w)
+			scope, err := f.store.ForkStartRecheckWorkspace(w)
 			scope.ExtraBindSources = nil
 			return scope, err
 		}
@@ -370,7 +374,7 @@ func TestForkStartRecheckWorkspaceAllowedPaths(t *testing.T) {
 		shared := filepath.Join(f.beta, "proj")
 		policy := f.policy()
 		policy.ForkStartRecheck.Workspace = func(w ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error) {
-			scope, err := f.scope(w)
+			scope, err := f.store.ForkStartRecheckWorkspace(w)
 			scope.ExtraBindSources = append(scope.ExtraBindSources, shared)
 			return scope, err
 		}
@@ -381,7 +385,7 @@ func TestForkStartRecheckWorkspaceAllowedPaths(t *testing.T) {
 		f := newForkStartRecheckWorkspaceFixture(t)
 		entry := filepath.Join(filepath.Dir(f.ws), "later", "entry")
 		policy := f.forkStartRecheckFixture.policy([]string{f.ws, entry}, nil)
-		policy.ForkStartRecheck.Workspace = f.scope
+		policy.ForkStartRecheck.Workspace = f.store.ForkStartRecheckWorkspace
 		f.daemon.set(http.StatusOK, containerIn(t, []string{filepath.Join(entry, "data")}))
 		assertForwarded(t, sendWorkspace(t, policy, "/containers/c1/start", devcontainerHeader(f.alpha)))
 	})
@@ -392,7 +396,29 @@ func TestForkStartRecheckWorkspaceAllowedPaths(t *testing.T) {
 func TestForkStartRecheckWorkspaceBaseHoldsBothAllowlists(t *testing.T) {
 	f := newForkStartRecheckWorkspaceFixture(t)
 	policy := f.forkStartRecheckFixture.policy([]string{f.ws}, []string{f.ws, f.outside})
-	policy.ForkStartRecheck.Workspace = f.scope
+	policy.ForkStartRecheck.Workspace = f.store.ForkStartRecheckWorkspace
 	f.daemon.set(http.StatusOK, containerIn(t, []string{filepath.Join(f.outside, "sub")}))
 	assertForwarded(t, sendWorkspace(t, policy, "/containers/c1/start", devcontainerHeader(f.alpha)))
+}
+
+func TestForkStartRecheckWorkspaceResolvesExtraEntries(t *testing.T) {
+	f := newForkStartRecheckWorkspaceFixture(t)
+	alias := filepath.Join(f.extra, "alias")
+	if err := os.Symlink(filepath.Join(f.beta, "proj"), alias); err != nil {
+		t.Fatal(err)
+	}
+	writeAtomic(t, f.store.Path(), mustJSON(t, workspaceDoc(workspaceEntryDoc(f.alpha, map[string]any{"extraBindSources": []string{alias}}))))
+	f.store.Reload()
+	f.daemon.set(200, containerIn(t, []string{f.alpha, alias + "/new"}))
+	assertForwarded(t, sendWorkspace(t, f.policy(), "/containers/c1/start", devcontainerHeader(f.alpha)))
+}
+
+func TestForkStartRecheckWorkspaceExtraAdmitsBaseSymlink(t *testing.T) {
+	f := newForkStartRecheckWorkspaceFixture(t)
+	alias := filepath.Join(f.alpha, "link")
+	if err := os.Symlink(filepath.Join(f.extra, "data"), alias); err != nil {
+		t.Fatal(err)
+	}
+	f.daemon.set(200, containerIn(t, []string{f.alpha, alias + "/sub"}))
+	assertForwarded(t, sendWorkspace(t, f.policy(), "/containers/c1/start", devcontainerHeader(f.alpha)))
 }

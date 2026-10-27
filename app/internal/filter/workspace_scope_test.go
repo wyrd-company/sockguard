@@ -159,7 +159,7 @@ func TestWorkspaceStoreForkStartRecheckScope(t *testing.T) {
 	shared := filepath.Join(h.f.outside, "shared")
 	writeAtomic(t, h.f.file, mustJSON(t, workspaceDoc(workspaceEntryDoc(h.f.alpha, map[string]any{"extraBindSources": []string{shared}}))))
 	h.store.Reload()
-	scope, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: h.f.alpha})
+	scope, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: h.f.alpha, Request: WorkspaceExceptionRequest{Binds: []string{h.f.alpha + ":/w"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestWorkspaceStoreForkStartRecheckScope(t *testing.T) {
 	if scope, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: h.f.beta}); err != nil || len(scope.ExtraBindSources) != 0 {
 		t.Fatalf("beta scope %+v %v: want no extra bind sources", scope, err)
 	}
-	if scope, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: h.f.alpha, Throwaway: true}); err != nil || len(scope.ExtraBindSources) != 0 {
+	if scope, err := h.store.ForkStartRecheckWorkspace(ForkStartRecheckWorkspace{Path: h.f.alpha, Throwaway: true, Request: WorkspaceExceptionRequest{Binds: []string{h.f.alpha + ":/w"}}}); err != nil || len(scope.ExtraBindSources) != 0 {
 		t.Fatalf("throwaway scope %+v %v: want no extra bind sources", scope, err)
 	}
 	for _, bad := range []string{"", h.f.alpha + "/", h.f.outside, filepath.Join(h.f.root, "missing")} {

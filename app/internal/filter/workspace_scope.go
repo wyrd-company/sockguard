@@ -160,18 +160,6 @@ func (s *WorkspaceExceptionSnapshot) perWorkspaceRoots() []string {
 	return s.roots
 }
 
-// extraBindSourcesFor is W's extraBindSources, or nil when the file has no
-// entry for W or is not loaded.
-func (s *WorkspaceExceptionSnapshot) extraBindSourcesFor(workspace string) []string {
-	if s == nil || s.state != WorkspaceExceptionsLoaded || workspace == "" {
-		return nil
-	}
-	if entry, ok := s.entries[workspace]; ok {
-		return entry.grants.extraBindSources
-	}
-	return nil
-}
-
 // workspaceScopedAllowlist narrows allowed for workspace folder name folder
 // (empty: no workspace). Each entry E is judged by its resolved form r (the
 // bind checks resolve allowlist entries too), per root R:
@@ -303,8 +291,9 @@ func DenyWorkspaceScopeReason(snap *WorkspaceExceptionSnapshot, id WorkspaceIden
 
 // ForkStartRecheckWorkspace validates w against the current snapshot and
 // returns its scope for the start re-check: the per-workspace roots, W's
-// folder under each, and W's extra bind sources (none for a throwaway
-// workspace). W must be a workspace key and a canonical directory.
+// folder under each, and extra bind sources only if w.Request passes the
+// current create-equivalent match. Throwaway requests receive no grants. W
+// must be a workspace key and a canonical directory.
 func (s *WorkspaceExceptionStore) ForkStartRecheckWorkspace(w ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error) {
 	snap := s.Load()
 	if err := checkWorkspaceKey(w.Path, snap.workspaceRoot()); err != nil {
@@ -319,7 +308,7 @@ func (s *WorkspaceExceptionStore) ForkStartRecheckWorkspace(w ForkStartRecheckWo
 		scope.Folders = append(scope.Folders, path.Join(root, path.Base(w.Path)))
 	}
 	if !w.Throwaway {
-		scope.ExtraBindSources = slices.Clone(snap.extraBindSourcesFor(w.Path))
+		scope.ExtraBindSources = MatchWorkspaceException(snap, w.Path, w.Request).ExtraBindSources()
 	}
 	return scope, nil
 }

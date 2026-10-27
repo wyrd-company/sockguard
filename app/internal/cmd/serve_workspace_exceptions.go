@@ -92,8 +92,8 @@ func runtimeWorkspaceExceptions(runtime *serveRuntime) *filter.WorkspaceExceptio
 
 // attachWorkspaceExceptions gives the default policy and every client profile
 // the store. A block reads it only when it sets apply_workspace_exceptions.
-// The start and restart re-check is wired separately; this attaches nothing
-// to it.
+// The store arrives after runtime inspectors are built, so start/restart
+// workspace attachment belongs here as well.
 func attachWorkspaceExceptions(opts filter.Options, store *filter.WorkspaceExceptionStore) filter.Options {
 	if store == nil {
 		return opts
@@ -110,5 +110,8 @@ func attachWorkspaceExceptions(opts filter.Options, store *filter.WorkspaceExcep
 
 func attachWorkspaceExceptionsTo(policy filter.PolicyConfig, store *filter.WorkspaceExceptionStore) filter.PolicyConfig {
 	policy.ContainerCreate.WorkspaceExceptions = store
+	if policy.ContainerCreate.ApplyWorkspaceExceptions {
+		policy.ForkStartRecheck.Workspace = store.ForkStartRecheckWorkspace
+	}
 	return policy
 }

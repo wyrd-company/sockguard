@@ -129,9 +129,22 @@ func TestAttachWorkspaceExceptionsReachesDefaultAndProfiles(t *testing.T) {
 	if profiles["sample"].ContainerCreate.WorkspaceExceptions != nil {
 		t.Fatal("the caller's profile map must not be modified")
 	}
-	// The start and restart re-check is not wired here.
+	// Profiles that do not opt in keep the start scope unset.
 	if opts.ForkStartRecheck.Workspace != nil || opts.Profiles["sample"].ForkStartRecheck.Workspace != nil {
-		t.Fatal("attachWorkspaceExceptions must not attach the start re-check scope")
+		t.Fatal("start scope attached without opt-in")
+	}
+	for _, enabled := range []bool{false, true} {
+		profiles := map[string]filter.Policy{
+			"on":  {PolicyConfig: filter.PolicyConfig{ContainerCreate: filter.ContainerCreateOptions{ApplyWorkspaceExceptions: true}}},
+			"off": {},
+		}
+		attached := attachWorkspaceExceptions(filter.Options{PolicyConfig: filter.PolicyConfig{ContainerCreate: filter.ContainerCreateOptions{ApplyWorkspaceExceptions: enabled}}, Profiles: profiles}, store)
+		if (attached.ForkStartRecheck.Workspace != nil) != enabled || attached.Profiles["on"].ForkStartRecheck.Workspace == nil || attached.Profiles["off"].ForkStartRecheck.Workspace != nil {
+			t.Fatal("start workspace opt-in not attached to default and each profile")
+		}
+		if profiles["on"].ForkStartRecheck.Workspace != nil {
+			t.Fatal("caller profile modified")
+		}
 	}
 	if got := attachWorkspaceExceptions(filter.Options{Profiles: profiles}, nil); got.ContainerCreate.WorkspaceExceptions != nil {
 		t.Fatal("a nil store attaches nothing")

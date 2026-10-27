@@ -20,7 +20,7 @@ and resolves outside every entry is denied.
 | `POST /containers/create` | `HostConfig.Binds` sources, `HostConfig.Mounts` entries of type `bind`, `Config.Volumes` keys that Podman reads as binds, `upperdir`/`workdir` overlay options in a `Binds` entry, and the bind device and overlay directories of a `local` volume in `Mounts[].VolumeOptions.DriverConfig` |
 | `POST /libpod/containers/create` | `mounts[]` bind sources, `rootfs`, `overlay_volumes[].source`, `upperdir`/`workdir` options on `overlay_volumes` and `volumes`, `init_path` |
 | `POST /volumes/create`, `POST /libpod/volumes/create` | the bind device and overlay directories of a `local` volume |
-| `POST /containers/{id}/start`, `POST /containers/{id}/restart` and the libpod equivalents | the bind sources the daemon reports for the container; see [Re-check at start and restart](#re-check-at-start-and-restart) |
+| `POST /containers/{id}/start`, `POST /containers/{id}/restart` and the libpod equivalents | the bind sources and local-volume bind devices the daemon reports for the container; see [Re-check at start and restart](#re-check-at-start-and-restart) |
 
 These keep the string check only:
 
@@ -139,21 +139,26 @@ that passes through the proxy.
 
 Before the proxy forwards a start or a restart, it reads the container from
 the daemon with `GET /containers/{id}/json` and applies the create check
-again to each bind source the daemon reports. The routes are:
+again to each bind source and local-volume bind device the daemon reports. The routes are:
 
 - `POST /containers/{id}/start` and `POST /containers/{id}/restart`, with and
   without an API version prefix
 - `POST /libpod/containers/{name}/start` and
   `POST /libpod/containers/{name}/restart`, with and without a version prefix
 
-The inspect goes through the same upstream connection as the proxied request,
-with its existing timeouts. Podman serves the same inspect route, so libpod
-starts are read the same way.
+The container inspect and each volume inspect go through the same upstream
+connection as the proxied request, with its existing timeouts. Podman serves
+the same Docker-compatible inspect routes, so libpod starts are read the same way.
 
 The sources are the `Mounts` entries of type `bind`, the sources of
 `HostConfig.Binds`, and the `HostConfig.Mounts` entries of type `bind`. A
 `Binds` or `Mounts` source is checked as written as well as cleaned, as at
-create.
+create. For every `Mounts` entry of type `volume`, the proxy reads
+`GET /volumes/{name}`. A `local` volume with bind options contributes its
+device paths, parsed by the same classifier as create, checked as written
+and cleaned, after resolution, and for directories the walk would create.
+A nonlocal driver or a local volume without bind options is unchanged. The
+volume's mount point is not used as its device.
 
 The allowlists are the active policy's
 `request_body.container_create.allowed_bind_mounts` and
@@ -162,14 +167,33 @@ route families, because the daemon mounts the same source whichever route
 created the container. A source is checked under each allowlist that admits
 it as written, and passes when one of them also admits it after resolution.
 
-The re-check narrows nothing that create allowed:
+In a block without `apply_workspace_exceptions`, the re-check keeps the
+no-narrowing rule:
 
 - A source that no allowlist admits as written passes. Such a container was
   not created under this policy, for example by another client or before the
   allowlist changed.
 - When neither allowlist is set, or either one holds `/`, no source can fail
-  the re-check, so the proxy does not read the container at all.
+  the re-check, so the proxy does not read the container or any volume at all.
 - A source that is unchanged since create resolves as it did at create.
+
+In a block with `container_create.apply_workspace_exceptions: true`, every
+start and restart requires exactly one workspace header, using the same
+reader and key rules as create. The inspected container must have no
+opposite-kind label; a same-kind label may be absent or exactly equal to the
+header workspace `W`. Both labels are denied, including equal or empty
+opposite-kind labels. Exec has a separate, stronger target-label rule.
+
+Every bind source and local-volume bind device must stay inside `W`'s own
+folder under every `per_workspace_roots` entry, or follow the base allowlist
+outside those roots. Extra bind sources apply only under the devcontainer
+header when the current inspected container passes the current exceptions
+snapshot's create-equivalent match: a valid entry, a workspace bind mount,
+and agreement of every inspected source. A named volume alone does not
+supply the required workspace bind mount. Throwaway requests get no extras.
+Own socket and staging folders count as inside `W`. Base and extra entries
+are resolved like create allowlists; `W`'s folders are never resolved as
+allowlist entries. See [Workspace identity](/workspace-exceptions#workspace-identity).
 
 Each failure has its own reason and reason code. `<action>` is
 `container start`, `container restart`, `libpod container start` or
@@ -178,9 +202,25 @@ Each failure has its own reason and reason code. `<action>` is
 | Reason code | Reason | Cause |
 | --- | --- | --- |
 | `container_start_bind_source_denied` | `<action> denied: bind mount source ...`, then the create reasons above | a source fails the create check now |
+| `container_start_volume_inspect_failed` | `<action> denied: volume "<name>" could not be inspected to re-check its bind devices` | a volume lookup failed: transport, non-200 status, invalid or missing inspect fields, unreadable body, or body larger than 8 MiB |
+| `container_start_workspace_missing` | `<action> denied: the request names no workspace ...` | neither workspace header is set in an opted-in profile |
+| `container_start_workspace_ambiguous` | `<action> denied: the request names more than one workspace` | both headers or a repeated header |
+| `container_start_workspace_invalid` | `<action> denied: the workspace header does not name a valid workspace` | empty, invalid, missing or noncanonical workspace folder |
+| `container_start_workspace_label_mismatch` | `<action> denied: workspace label <label> disagrees with the request's workspace [kind]` | an opposite-kind or unequal same-kind label |
+| `container_start_bind_source_outside_workspace` | `<action> denied: bind mount source ...`, naming the failed workspace bound or resolution | invalid device, or bind source or local-volume device outside the current workspace scope |
 | `container_start_inspect_failed` | `<action> denied: container "<id>" could not be inspected to re-check its bind sources` | the inspect failed: a transport error, a status other than 200 (a missing container included), a body that cannot be decoded or one larger than 8 MiB |
 
-An inspect failure fails closed. Its cause is logged at warning level.
+Both inspect failures fail closed. The container inspect cause is logged at
+warning level. Volume failures expose only the volume name; driver-option
+values and dependency error text are not logged. Header-validation and
+label-kind reasons never quote header values.
+
+The daemon's re-resolution of `HostConfig.Binds` was measured on dockerd
+29.9.2. Re-resolution of a local-volume bind device at start is inferred from
+code reading, not measured here. Acceptance must record the daemon and
+version, an unchanged admitted control, proxy denial after a device swap,
+and a separate observable direct-daemon control in owned temporary paths.
+Proxy denial alone does not establish daemon re-resolution.
 
 ## Gaps that remain
 
@@ -201,6 +241,6 @@ An inspect failure fails closed. Its cause is logged at warning level.
   `POST /libpod/pods/{name}/restart`, `POST /libpod/containers/{name}/restore`
   and kube play are not re-checked.
 - **Sources the create check covers that the inspect does not report as
-  binds.** The bind device and overlay directories of a `local` volume, and the
-  libpod `rootfs`, `overlay_volumes`, overlay `upperdir`/`workdir` options and
+  binds or local-volume bind devices.** Overlay directories of a `local`
+  volume, and the libpod `rootfs`, `overlay_volumes`, overlay `upperdir`/`workdir` options and
   `init_path`, are checked at create only.

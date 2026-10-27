@@ -3,14 +3,12 @@ package filter
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -83,11 +81,12 @@ func (f *forkStartRecheckFixture) restore(name string) {
 // forkStartRecheckDaemon is a mock daemon. It answers GET /containers/c1/json
 // with its current inspect body and records every request it gets.
 type forkStartRecheckDaemon struct {
-	server *httptest.Server
-	mu     sync.Mutex
-	status int
-	body   string
-	seen   []string
+	server  *httptest.Server
+	mu      sync.Mutex
+	status  int
+	body    string
+	seen    []string
+	volumes map[string]string
 }
 
 func newForkStartRecheckDaemon(t *testing.T) *forkStartRecheckDaemon {
@@ -97,8 +96,11 @@ func newForkStartRecheckDaemon(t *testing.T) *forkStartRecheckDaemon {
 		d.mu.Lock()
 		d.seen = append(d.seen, r.Method+" "+r.URL.EscapedPath())
 		status, body := d.status, d.body
+		volume, isVolume := d.volumes[r.URL.Path]
 		d.mu.Unlock()
-		if r.URL.Path != "/containers/c1/json" {
+		if isVolume {
+			status, body = http.StatusOK, volume
+		} else if r.URL.Path != "/containers/c1/json" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -114,6 +116,17 @@ func (d *forkStartRecheckDaemon) set(status int, body string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.status, d.body = status, body
+}
+
+func (d *forkStartRecheckDaemon) setVolumes(volumes map[string]string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.volumes = volumes
+}
+func (d *forkStartRecheckDaemon) clearRequests() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.seen = nil
 }
 
 func (d *forkStartRecheckDaemon) inspects() []string {
@@ -202,7 +215,7 @@ func (f *forkStartRecheckFixture) policy(compat, libpod []string) PolicyConfig {
 	return PolicyConfig{
 		ContainerCreate:       ContainerCreateOptions{AllowedBindMounts: compat},
 		LibpodContainerCreate: LibpodContainerCreateOptions{AllowedBindMounts: libpod},
-		ForkStartRecheck:      ForkStartRecheckOptions{InspectContainer: NewForkStartRecheckInspectorWithRoundTripper(f.daemon.transport())},
+		ForkStartRecheck:      ForkStartRecheckOptions{InspectContainer: NewForkStartRecheckInspectorWithRoundTripper(f.daemon.transport()), InspectVolume: NewForkStartRecheckVolumeInspectorWithRoundTripper(f.daemon.transport())},
 	}
 }
 
@@ -251,10 +264,11 @@ func (fn roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { 
 //	<root>/extra/data/sub/  under an extra bind source outside the root
 //
 // The per-workspace root is <root>/ws, the base allowlist is ws, and
-// extra/data is the extra bind source a devcontainer of any workspace gets.
+// extra/data is the extra bind source granted to alpha after a full match.
 type forkStartRecheckWorkspaceFixture struct {
 	*forkStartRecheckFixture
 	alpha, beta, extra string
+	store              *WorkspaceExceptionStore
 }
 
 func newForkStartRecheckWorkspaceFixture(t *testing.T) *forkStartRecheckWorkspaceFixture {
@@ -267,26 +281,19 @@ func newForkStartRecheckWorkspaceFixture(t *testing.T) *forkStartRecheckWorkspac
 			t.Fatal(err)
 		}
 	}
+	file := filepath.Join(root, "exceptions.json")
+	writeAtomic(t, file, mustJSON(t, workspaceDoc(workspaceEntryDoc(f.alpha, map[string]any{"extraBindSources": []string{filepath.Join(f.extra, "data")}}))))
+	var err error
+	f.store, err = NewWorkspaceExceptionStore(WorkspaceExceptionStoreOptions{Path: file, WorkspaceRoot: f.ws, MaxBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return f
-}
-
-// scope stands in for the workspace identity of the exceptions file: a
-// workspace is a direct child of the root, and only a devcontainer gets the
-// extra bind source.
-func (f *forkStartRecheckWorkspaceFixture) scope(w ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error) {
-	if path.Dir(w.Path) != f.ws || path.Clean(w.Path) != w.Path {
-		return ForkStartRecheckWorkspaceScope{}, errors.New("not a workspace")
-	}
-	scope := ForkStartRecheckWorkspaceScope{Roots: []string{f.ws}, Folders: []string{w.Path}}
-	if !w.Throwaway {
-		scope.ExtraBindSources = []string{filepath.Join(f.extra, "data")}
-	}
-	return scope, nil
 }
 
 func (f *forkStartRecheckWorkspaceFixture) policy() PolicyConfig {
 	p := f.forkStartRecheckFixture.policy([]string{f.ws}, nil)
-	p.ForkStartRecheck.Workspace = f.scope
+	p.ForkStartRecheck.Workspace = f.store.ForkStartRecheckWorkspace
 	return p
 }
 
@@ -323,4 +330,13 @@ func containerIn(t *testing.T, sources []string, labels ...string) string {
 		body.Config.Labels[key] = value
 	}
 	return inspectBodyOf(t, body)
+}
+
+func mapLabels(labels []string) map[string]string {
+	out := map[string]string{}
+	for _, label := range labels {
+		k, v, _ := strings.Cut(label, "=")
+		out[k] = v
+	}
+	return out
 }

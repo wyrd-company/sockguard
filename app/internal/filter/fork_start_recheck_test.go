@@ -215,7 +215,7 @@ func TestForkStartRecheckNarrowsNothingCreateAllowed(t *testing.T) {
 				// The volume entries name the swapped ws/proj, so only their
 				// type keeps them out of the re-check.
 				proj := filepath.Join(f.ws, "proj")
-				return inspectBody(t, []ForkStartRecheckMount{{Type: "volume", Source: proj}}, []string{"data:/data"}, []ForkStartRecheckMount{{Type: "volume", Source: proj}})
+				return inspectBody(t, []ForkStartRecheckMount{{Type: "volume", Source: proj, Name: "data"}}, []string{"data:/data"}, []ForkStartRecheckMount{{Type: "volume", Source: proj, Name: "data"}})
 			},
 			wantInspect: true,
 		},
@@ -232,6 +232,7 @@ func TestForkStartRecheckNarrowsNothingCreateAllowed(t *testing.T) {
 			}
 			f.swap("proj", f.outside)
 			f.daemon.set(http.StatusOK, tt.body(f))
+			f.daemon.setVolumes(map[string]string{"/volumes/data": `{"Driver":"local","Options":null}`})
 			for _, route := range forkStartRecheckRoutes {
 				assertForwarded(t, send(t, f.policy(compat, libpod), http.MethodPost, route.path, ""))
 			}

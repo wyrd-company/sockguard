@@ -18,14 +18,6 @@ import (
 // exceptions and apply only to a devcontainer: a throwaway workspace header,
 // or a throwaway label on the container, gets no extra bind source.
 
-// Workspace headers and identity labels.
-const (
-	forkStartRecheckWorkspaceHeader          = WorkspaceHeader
-	forkStartRecheckThrowawayWorkspaceHeader = WorkspaceThrowawayHeader
-	forkStartRecheckWorkspaceLabel           = WorkspaceLocalFolderLabel
-	forkStartRecheckThrowawayWorkspaceLabel  = WorkspaceThrowawayLabel
-)
-
 // Reason codes of the workspace scope. A deny reason never quotes a header
 // value.
 const (
@@ -42,6 +34,9 @@ type ForkStartRecheckWorkspace struct {
 	Path string
 	// Throwaway is set for a throwaway workspace, which gets no exceptions.
 	Throwaway bool
+	// Request is reconstructed from the current container and volume inspects,
+	// so extra bind grants require the same match as container create.
+	Request WorkspaceExceptionRequest
 }
 
 // ForkStartRecheckWorkspaceScope is what a workspace's bind sources may use.
@@ -73,7 +68,7 @@ func forkStartRecheckWorkspaceFromHeaders(header http.Header, subject string) (F
 	switch problem {
 	case WorkspaceHeaderMissing:
 		return ForkStartRecheckWorkspace{}, forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceMissing,
-			fmt.Sprintf("%s denied: the request names no workspace (set %s or %s)", subject, forkStartRecheckWorkspaceHeader, forkStartRecheckThrowawayWorkspaceHeader))
+			fmt.Sprintf("%s denied: the request names no workspace (set %s or %s)", subject, WorkspaceHeader, WorkspaceThrowawayHeader))
 	case WorkspaceHeaderAmbiguous:
 		return ForkStartRecheckWorkspace{}, forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceAmbiguous,
 			fmt.Sprintf("%s denied: the request names more than one workspace", subject))
@@ -89,16 +84,13 @@ func forkStartRecheckWorkspaceInvalid(subject string) error {
 }
 
 // denyWorkspace applies the workspace scope to an inspected container.
-func (p forkStartRecheckPolicy) denyWorkspace(subject string, workspace ForkStartRecheckWorkspace, container ForkStartRecheckContainer) error {
-	for _, label := range []string{forkStartRecheckWorkspaceLabel, forkStartRecheckThrowawayWorkspaceLabel} {
-		if value, ok := container.Config.Labels[label]; ok && value != workspace.Path {
-			return forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceLabelMismatch,
-				fmt.Sprintf("%s denied: container label %q does not match the request's workspace", subject, label))
-		}
+func (p forkStartRecheckPolicy) denyWorkspace(subject string, workspace ForkStartRecheckWorkspace, container ForkStartRecheckContainer, sources []forkStartRecheckSource) error {
+	id := WorkspaceIdentity{Kind: WorkspaceIdentityDevcontainer, Workspace: workspace.Path}
+	if workspace.Throwaway {
+		id.Kind = WorkspaceIdentityThrowaway
 	}
-	// A command container never gets exceptions, whichever header starts it.
-	if _, ok := container.Config.Labels[forkStartRecheckThrowawayWorkspaceLabel]; ok {
-		workspace.Throwaway = true
+	if reason := workspaceLabelDenyReason(container.Config.Labels, id, subject); reason != "" {
+		return forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceLabelMismatch, reason)
 	}
 	scope, err := p.workspace(workspace)
 	if err != nil {
@@ -108,7 +100,7 @@ func (p forkStartRecheckPolicy) denyWorkspace(subject string, workspace ForkStar
 		scope.ExtraBindSources = nil
 	}
 	allowed := newForkStartRecheckWorkspaceAllowed(scope, p.workspaceBase)
-	for _, source := range forkStartRecheckSources(container) {
+	for _, source := range sources {
 		if reason := allowed.denyReason(subject, source); reason != "" {
 			return forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeOutsideWorkspace, reason)
 		}
@@ -124,7 +116,7 @@ func (p forkStartRecheckPolicy) denyWorkspace(subject string, workspace ForkStar
 type forkStartRecheckWorkspaceAllowed struct {
 	roots []string
 	// underRoot is used under a root: W's folders and extra bind sources.
-	underRoot []string
+	underRoot, underRootResolved []string
 	// elsewhere is used outside the roots: the base allowlist and W's extra
 	// bind sources, as configured and resolved.
 	elsewhere, elsewhereResolved []string
@@ -135,6 +127,7 @@ func newForkStartRecheckWorkspaceAllowed(scope ForkStartRecheckWorkspaceScope, b
 	return forkStartRecheckWorkspaceAllowed{
 		roots:             scope.Roots,
 		underRoot:         append(slices.Clone(scope.Folders), scope.ExtraBindSources...),
+		underRootResolved: append(slices.Clone(scope.Folders), resolveBindAllowlist(scope.ExtraBindSources)...),
 		elsewhere:         elsewhere,
 		elsewhereResolved: resolveBindAllowlist(elsewhere),
 	}
@@ -149,6 +142,9 @@ func (a forkStartRecheckWorkspaceAllowed) location(location string, resolved, cr
 	}
 	if bindPathAllowed(location, a.roots) {
 		allowed = a.underRoot
+		if resolved {
+			allowed = a.underRootResolved
+		}
 	}
 	if created {
 		return createdBindDirAllowed(location, allowed)

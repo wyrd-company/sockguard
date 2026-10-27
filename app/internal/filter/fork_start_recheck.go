@@ -36,6 +36,7 @@ import (
 const (
 	forkStartRecheckReasonCodeBindSourceDenied = "container_start_bind_source_denied"
 	forkStartRecheckReasonCodeInspectFailed    = "container_start_inspect_failed"
+	forkStartRecheckReasonCodeVolumeFailed     = "container_start_volume_inspect_failed"
 )
 
 // ForkStartRecheckInspectFunc reads the bind sources of the container id
@@ -48,6 +49,7 @@ type ForkStartRecheckInspectFunc func(ctx context.Context, id string) (ForkStart
 // this only carries the runtime collaborators, which the serve chain attaches.
 type ForkStartRecheckOptions struct {
 	InspectContainer ForkStartRecheckInspectFunc
+	InspectVolume    ForkStartRecheckVolumeInspectFunc
 	// Workspace is set for a policy that applies workspace exceptions. A
 	// start then has to name its workspace in a header, and its bind sources
 	// are scoped to that workspace (fork_start_recheck_workspace.go). Nil
@@ -77,10 +79,12 @@ type ForkStartRecheckHostConfig struct {
 	Mounts []ForkStartRecheckMount `json:"Mounts"`
 }
 
-// ForkStartRecheckMount is one mount entry; only bind entries are read.
+// ForkStartRecheckMount is one mount entry. Named volumes are inspected
+// separately because Source is their mount point, not their bind device.
 type ForkStartRecheckMount struct {
 	Type   string `json:"Type"`
 	Source string `json:"Source"`
+	Name   string `json:"Name"`
 }
 
 // NewForkStartRecheckInspectorWithRoundTripper returns an inspector that issues
@@ -121,6 +125,7 @@ type forkStartRecheckPolicy struct {
 	// "/". It is empty when no allowlist needs the re-check.
 	allowlists       [][]string
 	inspectContainer ForkStartRecheckInspectFunc
+	inspectVolume    ForkStartRecheckVolumeInspectFunc
 	workspace        ForkStartRecheckWorkspaceFunc
 	// workspaceBase is every entry of both create allowlists, "/" included,
 	// for the workspace scope.
@@ -130,20 +135,20 @@ type forkStartRecheckPolicy struct {
 func newForkStartRecheckPolicy(cfg PolicyConfig) forkStartRecheckPolicy {
 	p := forkStartRecheckPolicy{
 		inspectContainer: cfg.ForkStartRecheck.InspectContainer,
+		inspectVolume:    cfg.ForkStartRecheck.InspectVolume,
 		workspace:        cfg.ForkStartRecheck.Workspace,
 	}
 	for _, entries := range [][]string{cfg.ContainerCreate.AllowedBindMounts, cfg.LibpodContainerCreate.AllowedBindMounts} {
 		allowed := forkStartRecheckAllowlist(entries)
 		p.workspaceBase = append(p.workspaceBase, allowed...)
-		if slices.Contains(allowed, "/") {
-			// "/" admits every source and the create check resolves none, so
-			// no start can fail the allowlist re-check.
-			p.allowlists = nil
-			break
-		}
 		if len(allowed) > 0 {
 			p.allowlists = append(p.allowlists, allowed)
 		}
+	}
+	// A root entry admits every source; retain both families in the workspace
+	// base, but skip the plain re-check regardless of their order.
+	if slices.Contains(p.workspaceBase, "/") {
+		p.allowlists = nil
 	}
 	return p
 }
@@ -211,11 +216,20 @@ func (p forkStartRecheckPolicy) inspect(logger *slog.Logger, r *http.Request, no
 		logRequestError(logger, r, slog.LevelWarn, "container start re-check: inspect failed; denying", err)
 		return "", forkStartRecheckInspectFailed(subject, id)
 	}
-	if reason := p.denyReason(subject, container); reason != "" {
-		return "", newRequestRejectionErrorWithCode(http.StatusForbidden, forkStartRecheckReasonCodeBindSourceDenied, reason)
+	sources := forkStartRecheckSources(container)
+	volumes, err := p.volumeSources(r.Context(), subject, container)
+	if err != nil {
+		return "", err
 	}
+	sources = append(sources, volumes.sources...)
 	if p.workspace != nil {
-		return "", p.denyWorkspace(subject, workspace, container)
+		workspace.Request = forkStartRecheckMatchRequest(container, volumes.mounts)
+		return "", p.denyWorkspace(subject, workspace, container, sources)
+	}
+	for _, source := range sources {
+		if reason := p.denySourceReason(subject, source); reason != "" {
+			return "", newRequestRejectionErrorWithCode(http.StatusForbidden, forkStartRecheckReasonCodeBindSourceDenied, reason)
+		}
 	}
 	return "", nil
 }
@@ -223,15 +237,6 @@ func (p forkStartRecheckPolicy) inspect(logger *slog.Logger, r *http.Request, no
 func forkStartRecheckInspectFailed(subject, id string) error {
 	return newRequestRejectionErrorWithCode(http.StatusForbidden, forkStartRecheckReasonCodeInspectFailed,
 		fmt.Sprintf("%s denied: container %q could not be inspected to re-check its bind sources", subject, id))
-}
-
-func (p forkStartRecheckPolicy) denyReason(subject string, container ForkStartRecheckContainer) string {
-	for _, source := range forkStartRecheckSources(container) {
-		if reason := p.denySourceReason(subject, source); reason != "" {
-			return reason
-		}
-	}
-	return ""
 }
 
 // denySourceReason applies the create check to one source under each
