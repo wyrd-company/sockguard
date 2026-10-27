@@ -238,11 +238,14 @@ func rootRelation(p string, roots []string) (string, rootRelationKind) {
 
 // DenyWorkspaceScopeReason checks req's host paths against the per-workspace
 // roots of snap for identity id. allowedBindMounts is the allowlist that
-// admitted the request. It returns "" when every host path under a
-// per-workspace root is inside that root's folder for id's workspace or
-// inside one of the workspace's extraBindSources. Exported for the
-// start-time re-check, which scopes an inspected container the same way.
-func DenyWorkspaceScopeReason(snap *WorkspaceExceptionSnapshot, id WorkspaceIdentity, req WorkspaceExceptionRequest, allowedBindMounts []string) string {
+// admitted the request. granted is the matched exception's extraBindSources:
+// extra bind sources are a grant, so they are passed only when the exception
+// applies (MatchWorkspaceException's ExtraBindSources, nil otherwise). It
+// returns "" when every host path under a per-workspace root is inside that
+// root's folder for id's workspace or inside one of granted. The roots come
+// from the configuration, so a missing or invalid file removes only the
+// grants, never the scoping.
+func DenyWorkspaceScopeReason(snap *WorkspaceExceptionSnapshot, id WorkspaceIdentity, req WorkspaceExceptionRequest, allowedBindMounts, granted []string) string {
 	roots := snap.perWorkspaceRoots()
 	if len(roots) == 0 {
 		return ""
@@ -260,11 +263,10 @@ func DenyWorkspaceScopeReason(snap *WorkspaceExceptionSnapshot, id WorkspaceIden
 			}
 		}
 	}
-	// Extra bind sources are an exception: only a devcontainer identity
-	// gets them.
-	var extras []string
-	if id.Kind == WorkspaceIdentityDevcontainer {
-		extras = snap.extraBindSourcesFor(id.Workspace)
+	// A throwaway identity never holds a grant, whatever the caller passes.
+	extras := granted
+	if id.Kind != WorkspaceIdentityDevcontainer {
+		extras = nil
 	}
 	normalized := make([]string, 0, len(allowedBindMounts))
 	for _, entry := range allowedBindMounts {

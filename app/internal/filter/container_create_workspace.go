@@ -96,7 +96,7 @@ func (p containerCreatePolicy) inspectWithWorkspaceExceptions(logger *slog.Logge
 		if match.Applied() {
 			allowed = unionStrings(allowed, match.entry.grants.extraBindSources)
 		}
-		reason = DenyWorkspaceScopeReason(snap, identity, matchReq, allowed)
+		reason = DenyWorkspaceScopeReason(snap, identity, matchReq, allowed, match.ExtraBindSources())
 	}
 	if reason != "" && match.Outcome == WorkspaceExceptionNotApplied {
 		reason += "; " + match.Detail
