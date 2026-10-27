@@ -1,99 +1,12 @@
 package filter
 
 import (
-	"errors"
-	"io"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// forkStartRecheckWorkspaceFixture adds per-workspace folders to the start
-// re-check fixture:
-//
-//	<root>/ws/alpha/proj/   workspace alpha's bind source
-//	<root>/ws/beta/proj/    workspace beta's folder
-//	<root>/extra/data/sub/  under an extra bind source outside the root
-//
-// The per-workspace root is <root>/ws, the base allowlist is ws, and
-// extra/data is the extra bind source a devcontainer of any workspace gets.
-type forkStartRecheckWorkspaceFixture struct {
-	*forkStartRecheckFixture
-	alpha, beta, extra string
-}
-
-func newForkStartRecheckWorkspaceFixture(t *testing.T) *forkStartRecheckWorkspaceFixture {
-	t.Helper()
-	f := &forkStartRecheckWorkspaceFixture{forkStartRecheckFixture: newForkStartRecheckFixture(t)}
-	root := filepath.Dir(f.ws)
-	f.alpha, f.beta, f.extra = filepath.Join(f.ws, "alpha"), filepath.Join(f.ws, "beta"), filepath.Join(root, "extra")
-	for _, dir := range []string{filepath.Join(f.alpha, "proj"), filepath.Join(f.beta, "proj"), filepath.Join(f.extra, "data", "sub")} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return f
-}
-
-// scope stands in for the workspace identity of the exceptions file: a
-// workspace is a direct child of the root, and only a devcontainer gets the
-// extra bind source.
-func (f *forkStartRecheckWorkspaceFixture) scope(w ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error) {
-	if path.Dir(w.Path) != f.ws || path.Clean(w.Path) != w.Path {
-		return ForkStartRecheckWorkspaceScope{}, errors.New("not a workspace")
-	}
-	scope := ForkStartRecheckWorkspaceScope{Roots: []string{f.ws}, Folders: []string{w.Path}}
-	if !w.Throwaway {
-		scope.ExtraBindSources = []string{filepath.Join(f.extra, "data")}
-	}
-	return scope, nil
-}
-
-func (f *forkStartRecheckWorkspaceFixture) policy() PolicyConfig {
-	p := f.forkStartRecheckFixture.policy([]string{f.ws}, nil)
-	p.ForkStartRecheck.Workspace = f.scope
-	return p
-}
-
-func sendWorkspace(t *testing.T, policy PolicyConfig, target string, header http.Header) forkStartRecheckResult {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, target, nil)
-	for name, values := range header {
-		for _, value := range values {
-			req.Header.Add(name, value)
-		}
-	}
-	return serveForkStartRecheck(t, slog.New(slog.NewTextHandler(io.Discard, nil)), policy, req)
-}
-
-func devcontainerHeader(w string) http.Header {
-	return http.Header{"X-Sockguard-Workspace": {w}}
-}
-
-func throwawayHeader(w string) http.Header {
-	return http.Header{"X-Sockguard-Throwaway-Workspace": {w}}
-}
-
-// containerIn is an inspect body whose bind sources are given and whose
-// labels are given as key=value pairs.
-func containerIn(t *testing.T, sources []string, labels ...string) string {
-	t.Helper()
-	mounts := make([]ForkStartRecheckMount, 0, len(sources))
-	for _, source := range sources {
-		mounts = append(mounts, bindMount(source))
-	}
-	body := ForkStartRecheckContainer{Mounts: mounts, Config: ForkStartRecheckConfig{Labels: map[string]string{}}}
-	for _, label := range labels {
-		key, value, _ := strings.Cut(label, "=")
-		body.Config.Labels[key] = value
-	}
-	return inspectBodyOf(t, body)
-}
 
 // TestForkStartRecheckWorkspaceHeaderIsRequired covers the header rules on
 // every start and restart spelling: none, both, a repeated header and an
