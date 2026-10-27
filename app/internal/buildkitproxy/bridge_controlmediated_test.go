@@ -222,10 +222,11 @@ func TestBridgeControlMediatedStatus(t *testing.T) {
 		}
 	})
 
-	t.Run("ref not owned by this session", func(t *testing.T) {
+	t.Run("ref not owned by closed session", func(t *testing.T) {
 		var daemonCalled atomic.Bool
 		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled.Store(true) })
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), daemon)
+		tb.registry.Close(tb.session.ID)
 
 		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, statusPath, &control.StatusRequest{Ref: "never-solved"}))
 		if err != nil {

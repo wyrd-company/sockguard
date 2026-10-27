@@ -69,8 +69,12 @@ still decoded and checked:
   the frontend attribute allowlist, the cache type and registry allowlists,
   the exporter type and push registry allowlists, the source policy denials,
   and the deprecated cache-ref denial.
-- `Control/Status` is admitted only for a ref the same client and profile
-  solved.
+- `Control/Status` reaches the daemon only after an admitted Solve owns the
+  ref for the same trusted client identity and profile. A Status that arrives
+  first waits for that admission. It creates no ownership, and a denied Solve
+  or a Solve from another identity or profile cannot release it. Request
+  cancellation or tunnel/session closure ends the wait; the existing stream
+  and message bounds apply, with no additional timeout.
 
 On `POST /session`, the Auth, Secrets, SSH, FileSync, FileSend and Upload
 mediation and their switches are unchanged.

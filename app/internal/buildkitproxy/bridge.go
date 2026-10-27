@@ -457,7 +457,7 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 	case "Status":
 		var req *control.StatusRequest
 		req, d = evaluateStatusRequest(payload)
-		if d == nil && !b.registry.OwnsRef(b.session.Key, req.GetRef()) {
+		if d == nil && !b.registry.waitForRef(r.Context(), b.session, req.GetRef()) {
 			d = deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "this ref does not belong to an admitted Solve for this client/profile")
 		}
 	default:
