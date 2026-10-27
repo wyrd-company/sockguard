@@ -92,18 +92,19 @@ var fuzzAdvertisementPolicies = []Policy{
 
 // FuzzRewriteSessionAdvertisement fuzzes rewriteSessionAdvertisement's
 // narrowing of the client-advertised X-Docker-Expose-Session-Grpc-Method
-// header. servicesJoined packs an arbitrary list of advertised service names
+// header. servicesJoined packs an arbitrary list of service or method declarations
 // as "\n"-separated values (mirroring FuzzValidateUpgradeRequest's "\x00"
 // packing trick above) so a single fuzzed string can drive an arbitrary
 // number of header entries.
 //
 // Invariant: never panics, and the header's value set AFTER rewriting is
-// always a subset of (the trimmed, non-empty input set) INTERSECTED with
-// "permitted by this policy" (ServiceAdmittedByPolicy) — rewriteSessionAdvertisement
+// always a subset of (the original non-empty input set) INTERSECTED with
+// "permitted by this policy" (Classify/Allowed, or the legacy service gate) — rewriteSessionAdvertisement
 // must never keep a value it wasn't given, and never keep one the policy
 // doesn't actually admit.
 func FuzzRewriteSessionAdvertisement(f *testing.F) {
 	f.Add("moby.filesync.v1.FileSync\nmoby.buildkit.v1.frontend.LLBBridge\nmoby.filesync.v1.Auth", uint8(0))
+	f.Add("/moby.filesync.v1.FileSync/DiffCopy\n/moby.filesync.v1.FileSync/TarStream\n/moby.filesync.v1.Auth/Credentials", uint8(2))
 	f.Add("", uint8(0))
 	f.Add("   \n\n  ", uint8(1))
 	f.Add("moby.notreal.v1.Bogus", uint8(2))
@@ -122,18 +123,23 @@ func FuzzRewriteSessionAdvertisement(f *testing.F) {
 
 		rewriteSessionAdvertisement(h, p)
 
-		originalTrimmed := map[string]bool{}
+		originalValues := map[string]bool{}
 		for _, s := range original {
-			if s = strings.TrimSpace(s); s != "" {
-				originalTrimmed[s] = true
+			if strings.TrimSpace(s) != "" {
+				originalValues[s] = true
 			}
 		}
 
 		for _, s := range h.Values(sessionGRPCMethodHeader) {
-			if !originalTrimmed[s] {
-				t.Fatalf("rewritten advertisement contains %q, which was never present (after trim) in the original advertisement %v", s, original)
+			if !originalValues[s] {
+				t.Fatalf("rewritten advertisement contains %q, which was never present in the original advertisement %v", s, original)
 			}
-			if !ServiceAdmittedByPolicy(EndpointSession, s, p) {
+			declaration := strings.TrimSpace(s)
+			admitted := ServiceAdmittedByPolicy(EndpointSession, declaration, p)
+			if service, method, ok := ParseGRPCPath(declaration); ok {
+				admitted = Classify(EndpointSession, service, method) != Deny && p.Allowed(EndpointSession, service, method)
+			}
+			if !admitted {
 				t.Fatalf("rewritten advertisement kept %q, which this policy does not permit", s)
 			}
 		}

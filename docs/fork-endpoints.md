@@ -174,6 +174,16 @@ Control/Prune, DiskUsage or build-history RPC is needed by the audited path.
 Unknown services/methods fail closed. Source-level method lists describe possible
 calls, not a packet capture of every branch taken by a particular build.
 
+Session advertisements carry full `/service/method` declarations. Each is
+filtered by the existing session endpoint classifier and exact per-method
+policy; admitted original values retain their order and repetitions. Unknown,
+disabled or malformed methods are removed without widening an enabled service.
+The legacy bare-service form retains its existing service gate. This is only
+advertisement filtering; every callback still passes its method, content and
+ownership checks. See [session declarations](content/docs/buildkit-llb-bridge.mdx#session-declarations)
+and `TestSessionAdvertisementUpgradeAndCallbacks` for upgrade and raw-frame
+regressions. Full consumer acceptance is a separate validation obligation.
+
 ### Why an HTTP rule cannot admit the gateway
 
 Sockguard `app/internal/buildkitproxy/registry.go:170` returns Deny for any
