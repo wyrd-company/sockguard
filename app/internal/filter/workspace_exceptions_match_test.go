@@ -23,6 +23,27 @@ type wsCreate struct {
 	labels     map[string]string
 	hostConfig map[string]any
 	top        map[string]any
+	// headers are the request headers. Nil derives the workspace header
+	// from the identity labels (the label equals the header, as the
+	// workspace manager sends it); a non-nil map is sent as it is.
+	headers map[string][]string
+}
+
+func (c wsCreate) header() http.Header {
+	h := http.Header{}
+	if c.headers != nil {
+		for k, v := range c.headers {
+			h[http.CanonicalHeaderKey(k)] = v
+		}
+		return h
+	}
+	if w, ok := c.labels[WorkspaceLocalFolderLabel]; ok {
+		h.Add(WorkspaceHeader, w)
+	}
+	if w, ok := c.labels[WorkspaceThrowawayLabel]; ok {
+		h.Add(WorkspaceThrowawayHeader, w)
+	}
+	return h
 }
 
 func (c wsCreate) body(t *testing.T) string {
@@ -85,6 +106,7 @@ func (h *wsHarness) options(edit func(*ContainerCreateOptions)) ContainerCreateO
 func (h *wsHarness) inspect(opts ContainerCreateOptions, req wsCreate) string {
 	h.t.Helper()
 	r := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(req.body(h.t)))
+	r.Header = req.header()
 	logger := slog.New(slog.NewJSONHandler(h.logs, nil))
 	reason, err := newContainerCreatePolicy(opts).inspectWithWorkspaceExceptions(logger, r, "/containers/create")
 	if err != nil {
@@ -122,12 +144,17 @@ func TestWorkspaceExceptionAppliesGrantToMatchedWorkspace(t *testing.T) {
 	h := newWSHarness(t, privilegedGrant)
 	privileged := map[string]any{"Privileged": true}
 	h.admit(h.options(nil), wsRequest(h.f.alpha, privileged))
-	// Controls: the base policy denies the same request without the label,
-	// and for a workspace without an entry.
+	// The workspace comes from the header: the label may be absent.
 	unlabeled := wsRequest(h.f.alpha, privileged)
 	unlabeled.labels = nil
-	h.deny(h.options(nil), unlabeled, "privileged containers are not allowed")
+	unlabeled.headers = map[string][]string{WorkspaceHeader: {h.f.alpha}}
+	h.admit(h.options(nil), unlabeled)
+	// Controls: the base policy denies the request for a workspace without
+	// an entry, and the profile denies a create without a header.
 	h.deny(h.options(nil), wsRequest(h.f.gamma, privileged), "privileged containers are not allowed")
+	headerless := wsRequest(h.f.alpha, privileged)
+	headerless.headers = map[string][]string{}
+	h.deny(h.options(nil), headerless, "the request names no workspace")
 }
 
 // A request for workspace X cannot use workspace Y's exception.
@@ -143,7 +170,7 @@ func TestWorkspaceExceptionDoesNotCrossWorkspaces(t *testing.T) {
 	// beta's label on a request that mounts alpha.
 	forged := wsRequest(h.f.alpha, privileged)
 	forged.labels[WorkspaceLocalFolderLabel] = h.f.beta
-	h.deny(h.options(nil), forged, `workspace exception for "`+h.f.beta+`" not applied`, "outside the workspace")
+	h.deny(h.options(nil), forged, "workspace exception not applied", "outside the workspace")
 	h.admit(h.options(nil), wsRequest(h.f.beta, privileged))
 }
 
@@ -165,7 +192,7 @@ func TestWorkspaceExceptionForgedLabelBindsOutsideWorkspace(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			req := wsRequest(h.f.alpha, map[string]any{"Privileged": true})
 			req.hostConfig["Binds"] = tc.binds
-			h.deny(h.options(nil), req, "privileged containers are not allowed", `workspace exception for "`+h.f.alpha+`" not applied`)
+			h.deny(h.options(nil), req, "privileged containers are not allowed", "workspace exception not applied")
 			delete(req.hostConfig, "Privileged")
 			if tc.scoped {
 				h.deny(h.options(nil), req, "outside this workspace's folder")
@@ -213,9 +240,6 @@ func TestWorkspaceExceptionBindAgreementRules(t *testing.T) {
 			r.hostConfig["Binds"] = []string{"named-volume:/data"}
 			return r
 		}(), "no bind source is the workspace"},
-		{"workspace is a symlink", wsRequest(delta, privileged), "the workspace resolves to"},
-		{"workspace missing", wsRequest(filepath.Join(h.f.root, "epsilon"), privileged), "cannot be resolved"},
-		{"workspace is a file", wsRequest(zeta, privileged), "is not a directory"},
 		{"mounts bind outside", func() wsCreate {
 			r := wsRequest(h.f.alpha, privileged)
 			r.hostConfig["Mounts"] = []map[string]any{{"Type": "bind", "Source": h.f.outside, "Target": "/data"}}
@@ -238,6 +262,17 @@ func TestWorkspaceExceptionBindAgreementRules(t *testing.T) {
 			h.deny(h.options(nil), tc.req, "privileged containers are not allowed", "not applied", tc.cause)
 		})
 	}
+	// A header workspace that is a symlink, missing or a file is not a
+	// workspace at all: the create is denied before any match, and the
+	// reason does not quote the header.
+	for name, ws := range map[string]string{"symlink": delta, "missing": filepath.Join(h.f.root, "epsilon"), "file": zeta} {
+		t.Run("header workspace "+name, func(t *testing.T) {
+			reason := h.deny(h.options(nil), wsRequest(ws, nil), "the workspace header does not name a valid workspace")
+			if strings.Contains(reason, ws) {
+				t.Fatalf("reason quotes the header: %q", reason)
+			}
+		})
+	}
 	// Positive control: a bind inside the workspace and a Mounts bind of it.
 	inside := wsRequest(h.f.alpha, privileged)
 	inside.hostConfig["Binds"] = []string{h.f.alpha + "/sub:/sub"}
@@ -256,9 +291,10 @@ func TestWorkspaceExceptionExtraBindSources(t *testing.T) {
 	req := wsRequest(h.f.alpha, nil)
 	req.hostConfig["Binds"] = []string{h.f.alpha + ":/w", extra + "/cache:/cache"}
 	h.admit(h.options(nil), req)
-	// Without the label the base allowlist, which lacks extra, decides.
-	req.labels = nil
-	h.deny(h.options(nil), req, "is not allowlisted")
+	// For another workspace the base allowlist, which lacks extra, decides.
+	other := wsRequest(h.f.gamma, nil)
+	other.hostConfig["Binds"] = []string{h.f.gamma + ":/w", extra + "/cache:/cache"}
+	h.deny(h.options(nil), other, "is not allowlisted")
 }
 
 func TestWorkspaceExceptionRequiresOptIn(t *testing.T) {
@@ -476,14 +512,17 @@ func TestRequireNoRestartPolicy(t *testing.T) {
 
 // Compose: devcontainer-builder 0.2.0 puts devcontainer.local_folder only on
 // the primary service (pkg/host/dockercompose/labels.go containerLabels); a
-// service's own Compose labels are merged under the managed ones.
+// service's own Compose labels are merged under the managed ones, so a
+// sidecar's label is whatever the Compose file says. The workspace comes from
+// the header the workspace manager's client sends on every service's create,
+// so a sidecar matches with no label, and a label that names another
+// workspace is refused.
 func TestWorkspaceExceptionComposeServices(t *testing.T) {
 	h := newWSHarness(t, privilegedGrant)
-	composeLabels := func(service string, primary bool) map[string]string {
+	composeLabels := func(service string, folder string) map[string]string {
 		l := map[string]string{"com.docker.compose.project": "sample", "com.docker.compose.service": service, "com.docker.compose.oneoff": "False"}
-		if primary {
-			l["devcontainer.compose.primary"] = "true"
-			l[WorkspaceLocalFolderLabel] = h.f.alpha
+		if folder != "" {
+			l[WorkspaceLocalFolderLabel] = folder
 		}
 		return l
 	}
@@ -493,21 +532,24 @@ func TestWorkspaceExceptionComposeServices(t *testing.T) {
 		if mounts != nil {
 			hc["Mounts"] = mounts
 		}
-		return wsCreate{labels: labels, hostConfig: hc}
+		return wsCreate{labels: labels, hostConfig: hc, headers: map[string][]string{WorkspaceHeader: {h.f.alpha}}}
 	}
 
-	h.admit(h.options(nil), service(composeLabels("app", true), []string{h.f.alpha + ":/workspaces/project"}, nil))
-	h.deny(h.options(nil), service(composeLabels("db", false), []string{"sample_data:/data"}, nil), "privileged containers are not allowed")
-	labeled := composeLabels("worker", false)
-	labeled[WorkspaceLocalFolderLabel] = h.f.alpha
-	h.admit(h.options(nil), service(labeled, []string{h.f.alpha + "/src:/src"}, nil))
+	h.admit(h.options(nil), service(composeLabels("app", h.f.alpha), []string{h.f.alpha + ":/workspaces/project"}, nil))
+	h.admit(h.options(nil), service(composeLabels("worker", ""), []string{h.f.alpha + "/src:/src"}, nil))
+	h.deny(h.options(nil), service(composeLabels("db", ""), []string{"sample_data:/data"}, nil), "privileged containers are not allowed", "no bind source is the workspace")
+	h.deny(h.options(nil), service(composeLabels("worker", h.f.beta), []string{h.f.alpha + "/src:/src"}, nil), "workspace label devcontainer.local_folder disagrees with the request's workspace")
 	// A config staged outside the workspace breaks agreement.
-	h.deny(h.options(nil), service(labeled, []string{h.f.alpha + "/src:/src"}, []map[string]any{configBind}), "not applied", "outside the workspace")
-	h.deny(h.options(nil), service(composeLabels("app", true), []string{h.f.alpha + ":/workspaces/project"}, []map[string]any{configBind}), "not applied")
+	h.deny(h.options(nil), service(composeLabels("worker", ""), []string{h.f.alpha + "/src:/src"}, []map[string]any{configBind}), "not applied", "outside the workspace")
+	h.deny(h.options(nil), service(composeLabels("app", h.f.alpha), []string{h.f.alpha + ":/workspaces/project"}, []map[string]any{configBind}), "not applied")
 	// Granting the staging folder as an extra bind source restores the match.
 	writeAtomic(t, h.f.file, mustJSON(t, workspaceDoc(workspaceEntryDoc(h.f.alpha, map[string]any{"privileged": true, "extraBindSources": []string{h.f.staging}}))))
 	h.store.Reload()
-	h.admit(h.options(nil), service(composeLabels("app", true), []string{h.f.alpha + ":/workspaces/project"}, []map[string]any{configBind}))
+	h.admit(h.options(nil), service(composeLabels("app", h.f.alpha), []string{h.f.alpha + ":/workspaces/project"}, []map[string]any{configBind}))
+	// A service created without the header is refused.
+	headerless := service(composeLabels("worker", h.f.alpha), []string{h.f.alpha + "/src:/src"}, nil)
+	headerless.headers = map[string][]string{}
+	h.deny(h.options(nil), headerless, "the request names no workspace")
 }
 
 func TestWorkspaceExceptionDecisionLog(t *testing.T) {
@@ -541,11 +583,10 @@ func TestWorkspaceExceptionDecisionLog(t *testing.T) {
 	if got := read(); len(got) != 1 || got[0]["workspace_exception"] != "not_applied:"+WorkspaceCauseBindSourceOutside || got[0]["approval_by_subject"] != nil {
 		t.Fatalf("not applied log: %v", got)
 	}
-	unlabeled := wsRequest(h.f.outside, nil)
-	unlabeled.labels = nil
-	h.admit(h.options(nil), unlabeled)
+	throwaway := wsCreate{hostConfig: map[string]any{"Binds": []string{h.f.alpha + ":/w"}}, headers: map[string][]string{WorkspaceThrowawayHeader: {h.f.alpha}}}
+	h.admit(h.options(nil), throwaway)
 	if got := read(); len(got) != 0 {
-		t.Fatalf("a create without the label must not log a workspace decision: %v", got)
+		t.Fatalf("a throwaway create must not log an exception decision: %v", got)
 	}
 }
 
@@ -574,6 +615,7 @@ func TestWorkspaceExceptionReloadHeldRequestKeepsItsSnapshot(t *testing.T) {
 	opts := h.options(nil)
 	body := &holdingBody{reached: make(chan struct{}), release: make(chan struct{}), r: strings.NewReader(wsRequest(h.f.alpha, map[string]any{"Privileged": true}).body(t))}
 	held := httptest.NewRequest(http.MethodPost, "/containers/create", body)
+	held.Header.Set(WorkspaceHeader, h.f.alpha)
 	type result struct {
 		reason string
 		err    error
@@ -612,7 +654,9 @@ func TestWorkspaceExceptionThroughMiddleware(t *testing.T) {
 		handler := MiddlewareWithOptions([]*CompiledRule{rule}, testLogger(), Options{PolicyConfig: PolicyConfig{ContainerCreate: h.options(nil)}})(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1.51/containers/create", strings.NewReader(req.body(t))))
+		r := httptest.NewRequest(http.MethodPost, "/v1.51/containers/create", strings.NewReader(req.body(t)))
+		r.Header = req.header()
+		handler.ServeHTTP(rec, r)
 		return rec.Code
 	}
 	if code := serve(wsRequest(h.f.alpha, map[string]any{"Privileged": true})); code != http.StatusNoContent {
@@ -628,23 +672,22 @@ func TestMatchWorkspaceExceptionAPI(t *testing.T) {
 		return []map[string]any{workspaceEntryDoc(f.alpha, map[string]any{"extraBindSources": []string{f.staging}, "restartPolicy": []string{"always"}})}
 	})
 	snap := h.store.Load()
-	m := MatchWorkspaceException(snap, WorkspaceExceptionRequest{
-		Labels: map[string]string{WorkspaceLocalFolderLabel: h.f.alpha},
+	m := MatchWorkspaceException(snap, h.f.alpha, WorkspaceExceptionRequest{
 		Binds:  []string{h.f.alpha + ":/w"},
 		Mounts: []WorkspaceExceptionMount{{Type: "bind", Source: h.f.staging + "/x"}},
 	})
 	if !m.Applied() || m.LogValue() != "applied" || len(m.ExtraBindSources()) != 1 || m.RestartPolicies()[0] != "always" || m.Approval().Subject != "user-0001" {
 		t.Fatalf("match: %+v", m)
 	}
-	if m := MatchWorkspaceException(snap, WorkspaceExceptionRequest{}); m.Outcome != WorkspaceExceptionNone || m.Applied() || m.ExtraBindSources() != nil {
-		t.Fatalf("no label: %+v", m)
+	if m := MatchWorkspaceException(snap, "", WorkspaceExceptionRequest{}); m.Outcome != WorkspaceExceptionNone || m.Applied() || m.ExtraBindSources() != nil {
+		t.Fatalf("no workspace: %+v", m)
 	}
-	if m := MatchWorkspaceException(nil, WorkspaceExceptionRequest{Labels: map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}}); m.Outcome != WorkspaceExceptionNone {
+	if m := MatchWorkspaceException(nil, h.f.alpha, WorkspaceExceptionRequest{}); m.Outcome != WorkspaceExceptionNone {
 		t.Fatalf("nil snapshot: %+v", m)
 	}
-	// The label value is matched byte-equal, not cleaned.
-	if m := MatchWorkspaceException(snap, WorkspaceExceptionRequest{Labels: map[string]string{WorkspaceLocalFolderLabel: h.f.alpha + "/"}, Binds: []string{h.f.alpha + ":/w"}}); m.Outcome != WorkspaceExceptionNone {
-		t.Fatalf("trailing slash label: %+v", m)
+	// The workspace is matched byte-equal, not cleaned.
+	if m := MatchWorkspaceException(snap, h.f.alpha+"/", WorkspaceExceptionRequest{Binds: []string{h.f.alpha + ":/w"}}); m.Outcome != WorkspaceExceptionNone {
+		t.Fatalf("trailing slash workspace: %+v", m)
 	}
 }
 

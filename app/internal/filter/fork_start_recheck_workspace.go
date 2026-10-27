@@ -20,10 +20,10 @@ import (
 
 // Workspace headers and identity labels.
 const (
-	forkStartRecheckWorkspaceHeader          = "X-Sockguard-Workspace"
-	forkStartRecheckThrowawayWorkspaceHeader = "X-Sockguard-Throwaway-Workspace"
-	forkStartRecheckWorkspaceLabel           = "devcontainer.local_folder"
-	forkStartRecheckThrowawayWorkspaceLabel  = "menagerie.throwaway.workspace"
+	forkStartRecheckWorkspaceHeader          = WorkspaceHeader
+	forkStartRecheckThrowawayWorkspaceHeader = WorkspaceThrowawayHeader
+	forkStartRecheckWorkspaceLabel           = WorkspaceLocalFolderLabel
+	forkStartRecheckThrowawayWorkspaceLabel  = WorkspaceThrowawayLabel
 )
 
 // Reason codes of the workspace scope. A deny reason never quotes a header
@@ -66,27 +66,21 @@ func forkStartRecheckWorkspaceDenied(code, reason string) error {
 
 // forkStartRecheckWorkspaceFromHeaders reads W from the request. Exactly one
 // header with exactly one non-empty value is accepted.
+// The headers are read by WorkspaceFromHeaders, the reader container create
+// and exec use too.
 func forkStartRecheckWorkspaceFromHeaders(header http.Header, subject string) (ForkStartRecheckWorkspace, error) {
-	devcontainer := header.Values(forkStartRecheckWorkspaceHeader)
-	throwaway := header.Values(forkStartRecheckThrowawayWorkspaceHeader)
-	switch {
-	case len(devcontainer) == 0 && len(throwaway) == 0:
+	id, problem := WorkspaceFromHeaders(header)
+	switch problem {
+	case WorkspaceHeaderMissing:
 		return ForkStartRecheckWorkspace{}, forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceMissing,
 			fmt.Sprintf("%s denied: the request names no workspace (set %s or %s)", subject, forkStartRecheckWorkspaceHeader, forkStartRecheckThrowawayWorkspaceHeader))
-	case len(devcontainer)+len(throwaway) > 1:
+	case WorkspaceHeaderAmbiguous:
 		return ForkStartRecheckWorkspace{}, forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceAmbiguous,
 			fmt.Sprintf("%s denied: the request names more than one workspace", subject))
-	}
-	workspace := ForkStartRecheckWorkspace{Throwaway: len(throwaway) == 1}
-	if workspace.Throwaway {
-		workspace.Path = throwaway[0]
-	} else {
-		workspace.Path = devcontainer[0]
-	}
-	if workspace.Path == "" {
+	case WorkspaceHeaderEmpty:
 		return ForkStartRecheckWorkspace{}, forkStartRecheckWorkspaceInvalid(subject)
 	}
-	return workspace, nil
+	return ForkStartRecheckWorkspace{Path: id.Workspace, Throwaway: id.Kind == WorkspaceIdentityThrowaway}, nil
 }
 
 func forkStartRecheckWorkspaceInvalid(subject string) error {

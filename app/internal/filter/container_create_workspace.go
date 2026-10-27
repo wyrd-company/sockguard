@@ -42,12 +42,25 @@ func (p containerCreatePolicy) inspectWithWorkspaceExceptions(logger *slog.Logge
 	if !p.applyWorkspaceExceptions && !p.requireNoRestartPolicy {
 		return p.inspect(logger, r, normalizedPath)
 	}
-	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" || r.Body == nil {
+	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" {
 		return p.inspect(logger, r, normalizedPath)
 	}
 	// The snapshot is taken before the body is read, so a replace that
 	// lands while the body streams in does not change this request.
 	snap := p.workspaceExceptions.Load()
+	// The workspace comes from the request headers, before the body is
+	// read: a create without a valid workspace is denied whatever it
+	// carries, an empty or unreadable body included.
+	identity := WorkspaceIdentity{Kind: WorkspaceIdentityNone}
+	if p.applyWorkspaceExceptions {
+		var reason string
+		if identity, reason = workspaceHeaderDenyReason(r.Header, snap, "container create"); reason != "" {
+			return reason, nil
+		}
+	}
+	if r.Body == nil {
+		return p.inspect(logger, r, normalizedPath)
+	}
 
 	// On every read or decode failure, inspect reads the restored body
 	// again and gives its own refusal (size, ambiguous keys, malformed
@@ -63,16 +76,15 @@ func (p containerCreatePolicy) inspectWithWorkspaceExceptions(logger *slog.Logge
 	}
 
 	match := WorkspaceExceptionMatch{Outcome: WorkspaceExceptionNone}
-	identity := WorkspaceIdentity{Kind: WorkspaceIdentityNone}
 	matchReq := workspaceExceptionRequestFromCreate(&req)
 	if p.applyWorkspaceExceptions {
-		var reason string
-		if identity, reason = workspaceIdentity(req.Labels, snap); reason != "" {
+		if reason := workspaceLabelDenyReason(req.Labels, identity, "container create"); reason != "" {
 			return reason, nil
 		}
-		// A throwaway identity scopes binds and never grants.
+		// Only the devcontainer header can match an exception; the
+		// throwaway header scopes binds and never grants.
 		if identity.Kind == WorkspaceIdentityDevcontainer {
-			match = MatchWorkspaceException(snap, matchReq)
+			match = MatchWorkspaceException(snap, identity.Workspace, matchReq)
 		}
 	}
 	reason, err := p.inspectMatched(logger, r, normalizedPath, &req, restart.HostConfig.RestartPolicy.Name, match)
@@ -89,7 +101,7 @@ func (p containerCreatePolicy) inspectWithWorkspaceExceptions(logger *slog.Logge
 	if reason != "" && match.Outcome == WorkspaceExceptionNotApplied {
 		reason += "; " + match.Detail
 	}
-	if _, labeled := req.Labels[WorkspaceLocalFolderLabel]; labeled && p.applyWorkspaceExceptions {
+	if identity.Kind == WorkspaceIdentityDevcontainer {
 		logWorkspaceExceptionDecision(logger, r, match, reason)
 	}
 	return reason, nil

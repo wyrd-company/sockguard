@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -12,18 +11,15 @@ import (
 // Fork-owned (wyrd-company/sockguard): matching a container to one entry of
 // the workspace exceptions file.
 //
-// MatchWorkspaceException is the one matcher. The create inspector calls it,
-// and the start/restart re-check reuses it on an inspected container, so a
-// container gets the same answer at create and at start.
+// MatchWorkspaceException is the one matcher; the create inspector calls it
+// with the workspace the request's header names.
 
 // WorkspaceExceptionOutcome is the result class of a match. It is the value
 // of the workspace_exception log field.
 type WorkspaceExceptionOutcome string
 
 const (
-	// WorkspaceExceptionNone: the request has no devcontainer.local_folder
-	// label, or no entry has its value as the workspace. Not logged when
-	// the label is absent.
+	// WorkspaceExceptionNone: no entry has the request's workspace.
 	WorkspaceExceptionNone WorkspaceExceptionOutcome = "none"
 	// WorkspaceExceptionApplied: the entry matched; its grants apply.
 	WorkspaceExceptionApplied WorkspaceExceptionOutcome = "applied"
@@ -57,8 +53,6 @@ type WorkspaceExceptionMount struct {
 // WorkspaceExceptionRequest is the part of a container create request (or of
 // an inspected container, for a start re-check) that matching reads.
 type WorkspaceExceptionRequest struct {
-	// Labels is Config.Labels.
-	Labels map[string]string
 	// Binds is HostConfig.Binds.
 	Binds []string
 	// Mounts is HostConfig.Mounts.
@@ -70,8 +64,8 @@ type WorkspaceExceptionRequest struct {
 // WorkspaceExceptionMatch is the result of MatchWorkspaceException.
 type WorkspaceExceptionMatch struct {
 	Outcome WorkspaceExceptionOutcome
-	// Workspace is the label value when an entry has it (or, for an invalid
-	// file, when it is a direct child of the workspace root).
+	// Workspace is W when an entry has it (or, for an invalid file, when it
+	// is a direct child of the workspace root).
 	Workspace string
 	// Cause is one of the WorkspaceCause* values for a not-applied outcome.
 	Cause string
@@ -121,31 +115,31 @@ func (m WorkspaceExceptionMatch) LogValue() string {
 	return string(m.Outcome)
 }
 
-// MatchWorkspaceException matches req to an entry of snap. It applies the
-// label, workspace and bind-source agreement rules; whether the base policy
-// opts in to exceptions (apply_workspace_exceptions) is the caller's check.
+// MatchWorkspaceException matches a request for workspace W (from the
+// X-Sockguard-Workspace header, already checked by the caller together with
+// apply_workspace_exceptions and the identity labels) to snap's entry for W:
 //
-//  1. Config.Labels has the exact key devcontainer.local_folder, and its value
-//     is byte-equal to an entry's workspace. The value is not cleaned.
-//  2. The workspace resolves to itself (no symlink on its path) and is a
-//     directory, in the proxy's mount namespace.
+//  1. snap has an entry whose workspace is byte-equal to W.
+//  2. W resolves to itself (no symlink on its path) and is a directory, in
+//     the proxy's mount namespace.
 //  3. Every host path the request mounts (bind sources, host-path Volumes
 //     keys, local volume bind devices, overlay directories) resolves inside
-//     the workspace or one of the entry's extraBindSources, by the same checks
-//     the bind allowlist uses, symlink resolution included.
-//  4. At least one bind source resolves to the workspace or inside it.
-func MatchWorkspaceException(snap *WorkspaceExceptionSnapshot, req WorkspaceExceptionRequest) WorkspaceExceptionMatch {
-	label, ok := req.Labels[WorkspaceLocalFolderLabel]
-	if !ok {
+//     W or one of the entry's extraBindSources, by the same checks the bind
+//     allowlist uses, symlink resolution included.
+//  4. At least one bind source resolves to W or inside it.
+//
+// Details never quote W, which comes from a request header.
+func MatchWorkspaceException(snap *WorkspaceExceptionSnapshot, workspace string, req WorkspaceExceptionRequest) WorkspaceExceptionMatch {
+	if workspace == "" {
 		return WorkspaceExceptionMatch{Outcome: WorkspaceExceptionNone}
 	}
 	if snap.State() == WorkspaceExceptionsInvalid {
-		// No entry can be read. A label that could be a key is told why
+		// No entry can be read. A workspace that could be a key is told why
 		// it gets nothing.
-		if checkWorkspaceKey(label, snap.root) == nil {
+		if checkWorkspaceKey(workspace, snap.root) == nil {
 			return WorkspaceExceptionMatch{
 				Outcome:   WorkspaceExceptionNotApplied,
-				Workspace: label,
+				Workspace: workspace,
 				Cause:     WorkspaceCausePolicyFileInvalid,
 				Detail:    "workspace exceptions unavailable: policy file invalid",
 			}
@@ -155,7 +149,7 @@ func MatchWorkspaceException(snap *WorkspaceExceptionSnapshot, req WorkspaceExce
 	if snap.State() != WorkspaceExceptionsLoaded {
 		return WorkspaceExceptionMatch{Outcome: WorkspaceExceptionNone}
 	}
-	entry, ok := snap.entries[label]
+	entry, ok := snap.entries[workspace]
 	if !ok {
 		return WorkspaceExceptionMatch{Outcome: WorkspaceExceptionNone}
 	}
@@ -164,7 +158,7 @@ func MatchWorkspaceException(snap *WorkspaceExceptionSnapshot, req WorkspaceExce
 			Outcome:   WorkspaceExceptionNotApplied,
 			Workspace: entry.workspace,
 			Cause:     cause,
-			Detail:    fmt.Sprintf("workspace exception for %q not applied: %s", entry.workspace, detail),
+			Detail:    "workspace exception not applied: " + detail,
 		}
 	}
 	if cause, detail := checkWorkspaceFolder(entry.workspace); cause != "" {
@@ -191,7 +185,7 @@ func checkWorkspaceFolder(workspace string) (cause, detail string) {
 		return WorkspaceCauseWorkspaceUnresolvable, "the workspace cannot be resolved"
 	}
 	if resolved != workspace {
-		return WorkspaceCauseWorkspaceNotCanonical, fmt.Sprintf("the workspace resolves to %q", resolved)
+		return WorkspaceCauseWorkspaceNotCanonical, "the workspace path has a symlink on it"
 	}
 	info, err := os.Stat(workspace)
 	if err != nil || !info.IsDir() {
@@ -279,7 +273,7 @@ func (req WorkspaceExceptionRequest) containerCreateShape() (containerCreateHost
 // workspaceExceptionRequestFromCreate builds the matcher input from a decoded
 // create request.
 func workspaceExceptionRequestFromCreate(req *containerCreateRequest) WorkspaceExceptionRequest {
-	out := WorkspaceExceptionRequest{Labels: req.Labels, Binds: req.HostConfig.Binds}
+	out := WorkspaceExceptionRequest{Binds: req.HostConfig.Binds}
 	for _, m := range req.HostConfig.Mounts {
 		mount := WorkspaceExceptionMount{Type: m.Type, Source: m.Source}
 		if m.VolumeOptions != nil && m.VolumeOptions.DriverConfig != nil {
