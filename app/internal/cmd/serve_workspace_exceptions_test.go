@@ -288,14 +288,12 @@ func TestRunServeWorkspaceExceptionsStartup(t *testing.T) {
 			t.Fatal(err)
 		}
 		deps := newDeps(func(c *config.Config) { c.WorkspaceExceptions.WorkspaceRoot = link }, &syncBuffer{})
-		served := false
-		deps.startServing = func(*http.Server, net.Listener, chan<- error) { served = true }
+		// Serving ends the run at once, so a start-up that does not refuse
+		// the root fails this test instead of hanging it.
+		deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) { errCh <- errors.New("served") }
 		err := runServeWithDeps(newServeCommand(), nil, deps)
 		if err == nil || !strings.Contains(err.Error(), "workspace exceptions:") || !strings.Contains(err.Error(), "not canonical") {
 			t.Fatalf("runServeWithDeps() = %v, want a workspace exceptions start-up error", err)
-		}
-		if served {
-			t.Fatal("the proxy must not serve with a non-canonical workspace root")
 		}
 	})
 

@@ -4,7 +4,9 @@
 package filter
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -144,6 +146,11 @@ func TestWorkspaceExceptionsParseValidDocument(t *testing.T) {
 	if beta := entries[f.beta].grants; beta.privileged || len(beta.extraBindSources) != 0 {
 		t.Fatalf("missing grant fields must mean not granted: %+v", beta)
 	}
+	future := workspaceEntryDoc(f.gamma, nil)
+	future["approval"].(map[string]any)["at"] = "2999-12-31T23:59:59Z"
+	if _, err := parseWorkspaceExceptions(mustJSON(t, workspaceDoc(future)), f.root); err != nil {
+		t.Fatalf("approval.at is not compared with the clock: %v", err)
+	}
 	if a := entries[f.alpha].approval; a.Issuer != "https://id.example.org" || a.Subject != "user-0001" || a.At != "2026-01-02T03:04:05Z" {
 		t.Fatalf("approval not decoded: %+v", a)
 	}
@@ -254,6 +261,30 @@ func TestWorkspaceExceptionStoreStates(t *testing.T) {
 	}
 	if want := []string{"missing", "ok", "invalid", "missing"}; !slices.Equal(loads, want) {
 		t.Fatalf("load outcomes %v, want %v", loads, want)
+	}
+}
+
+// A missing file is logged when it goes missing, not on every reload; an
+// invalid file logs an error with its cause on every load.
+func TestWorkspaceExceptionStoreLogs(t *testing.T) {
+	f := newWorkspaceExceptionsFixture(t)
+	var logs bytes.Buffer
+	store, err := NewWorkspaceExceptionStore(WorkspaceExceptionStoreOptions{
+		Path: f.file, WorkspaceRoot: f.root, MaxBytes: 1 << 20, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Reload()
+	store.Reload()
+	if got := strings.Count(logs.String(), "workspace exceptions file not found"); got != 1 {
+		t.Fatalf("missing file logged %d times over three loads, want 1:\n%s", got, logs.String())
+	}
+	writeAtomic(t, f.file, []byte(`{"version":1,"exceptions":[],"extra":1}`))
+	store.Reload()
+	store.Reload()
+	if got := strings.Count(logs.String(), "level=ERROR msg=\"workspace exceptions file invalid"); got != 2 || !strings.Contains(logs.String(), `unknown key \"extra\"`) {
+		t.Fatalf("invalid file: %d error lines, want 2 naming the cause:\n%s", got, logs.String())
 	}
 }
 
