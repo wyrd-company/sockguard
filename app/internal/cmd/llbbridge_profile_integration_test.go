@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 	"net"
 	"net/http"
@@ -62,6 +63,14 @@ func (c *bufferedNetConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 // remoteAddr, sends one LLBBridge/Ping, and returns its gRPC status code.
 func llbBridgeCallStatus(t *testing.T, proxyAddr, remoteAddr string) int {
 	t.Helper()
+	code, _ := forkFieldBuildkitCall(t, proxyAddr, remoteAddr, "/moby.buildkit.v1.frontend.LLBBridge/Ping", nil)
+	return code
+}
+
+// forkFieldBuildkitCall shares the existing real h2c tunnel driver. Wire
+// payloads are constructed with stdlib helpers in fork_field_buildkit_test.go.
+func forkFieldBuildkitCall(t *testing.T, proxyAddr, remoteAddr, rpc string, payload []byte) (int, string) {
+	t.Helper()
 	conn, err := net.Dial("tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
@@ -89,7 +98,7 @@ func llbBridgeCallStatus(t *testing.T, proxyAddr, remoteAddr string) int {
 	}
 	t.Cleanup(func() { _ = cc.Close() })
 
-	req, err := http.NewRequest(http.MethodPost, "http://buildkitd/moby.buildkit.v1.frontend.LLBBridge/Ping", nil)
+	req, err := http.NewRequest(http.MethodPost, "http://buildkitd"+rpc, bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -98,7 +107,10 @@ func llbBridgeCallStatus(t *testing.T, proxyAddr, remoteAddr string) int {
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
-	_, _ = io.Copy(io.Discard, grpcResp.Body)
+	body, err := io.ReadAll(grpcResp.Body)
+	if err != nil {
+		t.Fatalf("read gRPC response: %v", err)
+	}
 	_ = grpcResp.Body.Close()
 	status := grpcResp.Header.Get("Grpc-Status")
 	if status == "" {
@@ -108,7 +120,7 @@ func llbBridgeCallStatus(t *testing.T, proxyAddr, remoteAddr string) int {
 	if err != nil {
 		t.Fatalf("Grpc-Status %q is not an integer", status)
 	}
-	return code
+	return code, string(body)
 }
 
 // The passthrough follows the profile a client is assigned to: profile
