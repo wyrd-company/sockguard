@@ -152,10 +152,12 @@ func TestWorkspaceExceptionAppliesGrantToMatchedWorkspace(t *testing.T) {
 	h := newWSHarness(t, privilegedGrant)
 	privileged := map[string]any{"Privileged": true}
 	h.admit(h.options(nil), wsRequest(h.f.alpha, privileged))
-	// The workspace comes from the header: the label may be absent.
+	// The header supplies identity; without a primary label only BASE applies.
 	unlabeled := wsRequest(h.f.alpha, privileged)
 	unlabeled.labels = nil
 	unlabeled.headers = map[string][]string{WorkspaceHeader: {h.f.alpha}}
+	h.deny(h.options(nil), unlabeled, "privileged containers are not allowed")
+	unlabeled.hostConfig["Privileged"] = false
 	h.admit(h.options(nil), unlabeled)
 	// Controls: the base policy denies the request for a workspace without
 	// an entry, and the profile denies a create without a header.
@@ -530,7 +532,7 @@ func TestRequireNoRestartPolicy(t *testing.T) {
 // service's own Compose labels are merged under the managed ones, so a
 // sidecar's label is whatever the Compose file says. The workspace comes from
 // the header the workspace manager's client sends on every service's create,
-// so a sidecar matches with no label, and a label that names another
+// so an unlabeled sidecar uses BASE only. A label that names another
 // workspace is refused.
 func TestWorkspaceExceptionComposeServices(t *testing.T) {
 	h := newWSHarness(t, privilegedGrant)
@@ -551,11 +553,14 @@ func TestWorkspaceExceptionComposeServices(t *testing.T) {
 	}
 
 	h.admit(h.options(nil), service(composeLabels("app", h.f.alpha), []string{h.f.alpha + ":/workspaces/project"}, nil))
-	h.admit(h.options(nil), service(composeLabels("worker", ""), []string{h.f.alpha + "/src:/src"}, nil))
-	h.deny(h.options(nil), service(composeLabels("db", ""), []string{"sample_data:/data"}, nil), "privileged containers are not allowed", "no bind source is the workspace")
+	sidecar := service(composeLabels("worker", ""), []string{h.f.alpha + "/src:/src"}, nil)
+	h.deny(h.options(nil), sidecar, "privileged containers are not allowed")
+	sidecar.hostConfig["Privileged"] = false
+	h.admit(h.options(nil), sidecar)
+	h.deny(h.options(nil), service(composeLabels("db", h.f.alpha), []string{"sample_data:/data"}, nil), "privileged containers are not allowed", "no bind source is the workspace")
 	h.deny(h.options(nil), service(composeLabels("worker", h.f.beta), []string{h.f.alpha + "/src:/src"}, nil), "workspace label devcontainer.local_folder disagrees with the request's workspace")
 	// A config staged outside the workspace breaks agreement.
-	h.deny(h.options(nil), service(composeLabels("worker", ""), []string{h.f.alpha + "/src:/src"}, []map[string]any{configBind}), "not applied", "outside the workspace")
+	h.deny(h.options(nil), service(composeLabels("worker", h.f.alpha), []string{h.f.alpha + "/src:/src"}, []map[string]any{configBind}), "not applied", "outside the workspace")
 	h.deny(h.options(nil), service(composeLabels("app", h.f.alpha), []string{h.f.alpha + ":/workspaces/project"}, []map[string]any{configBind}), "not applied")
 	// Granting the staging folder as an extra bind source restores the match.
 	writeAtomic(t, h.f.file, mustJSON(t, workspaceDoc(workspaceEntryDoc(h.f.alpha, map[string]any{"privileged": true, "extraBindSources": []string{h.f.staging}}))))

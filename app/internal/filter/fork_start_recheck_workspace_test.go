@@ -1,3 +1,6 @@
+// relationships:
+//
+// references: [../../../docs/content/docs/workspace-exceptions]
 package filter
 
 import (
@@ -257,7 +260,9 @@ func TestForkStartRecheckWorkspaceExceptionsOnlyForADevcontainer(t *testing.T) {
 		alwaysExtras bool
 		denied       bool
 	}{
-		{name: "devcontainer header", header: func(f *forkStartRecheckWorkspaceFixture) http.Header { return devcontainerHeader(f.alpha) }},
+		{name: "devcontainer header", labels: func(f *forkStartRecheckWorkspaceFixture) []string {
+			return []string{"devcontainer.local_folder=" + f.alpha}
+		}, header: func(f *forkStartRecheckWorkspaceFixture) http.Header { return devcontainerHeader(f.alpha) }},
 		{name: "throwaway header", header: func(f *forkStartRecheckWorkspaceFixture) http.Header { return throwawayHeader(f.alpha) }, denied: true},
 		{
 			name:         "throwaway header with a scope that returns the extra",
@@ -378,7 +383,7 @@ func TestForkStartRecheckWorkspaceAllowedPaths(t *testing.T) {
 			scope.ExtraBindSources = append(scope.ExtraBindSources, shared)
 			return scope, err
 		}
-		f.daemon.set(http.StatusOK, containerIn(t, []string{shared}))
+		f.daemon.set(http.StatusOK, containerIn(t, []string{shared}, "devcontainer.local_folder="+f.alpha))
 		assertForwarded(t, sendWorkspace(t, policy, "/containers/c1/start", devcontainerHeader(f.alpha)))
 	})
 	t.Run("parents of a base entry that does not exist yet", func(t *testing.T) {
@@ -409,7 +414,7 @@ func TestForkStartRecheckWorkspaceResolvesExtraEntries(t *testing.T) {
 	}
 	writeAtomic(t, f.store.Path(), mustJSON(t, workspaceDoc(workspaceEntryDoc(f.alpha, map[string]any{"extraBindSources": []string{alias}}))))
 	f.store.Reload()
-	f.daemon.set(200, containerIn(t, []string{f.alpha, alias + "/new"}))
+	f.daemon.set(200, containerIn(t, []string{f.alpha, alias + "/new"}, "devcontainer.local_folder="+f.alpha))
 	assertForwarded(t, sendWorkspace(t, f.policy(), "/containers/c1/start", devcontainerHeader(f.alpha)))
 }
 
@@ -419,6 +424,6 @@ func TestForkStartRecheckWorkspaceExtraAdmitsBaseSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(f.extra, "data"), alias); err != nil {
 		t.Fatal(err)
 	}
-	f.daemon.set(200, containerIn(t, []string{f.alpha, alias + "/sub"}))
+	f.daemon.set(200, containerIn(t, []string{f.alpha, alias + "/sub"}, "devcontainer.local_folder="+f.alpha))
 	assertForwarded(t, sendWorkspace(t, f.policy(), "/containers/c1/start", devcontainerHeader(f.alpha)))
 }

@@ -48,10 +48,10 @@ func TestWorkspaceScopeExtraBetaWithoutAlphaMount(t *testing.T) {
 	writeAtomic(t, h.f.file, mustJSON(t, workspaceDoc(workspaceEntryDoc(h.f.alpha, map[string]any{"extraBindSources": []string{h.f.beta}}))))
 	h.store.Reload()
 	opts := h.scopeOptions(sockets, nil)
-	control := scopedRequest(nil, h.f.alpha+":/workspace", h.f.beta+":/shared")
+	control := scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}, h.f.alpha+":/workspace", h.f.beta+":/shared")
 	control.headers = http.Header{WorkspaceHeader: {h.f.alpha}}
 	h.admit(opts, control)
-	onlyBeta := scopedRequest(nil, h.f.beta+":/shared")
+	onlyBeta := scopedRequest(map[string]string{WorkspaceLocalFolderLabel: h.f.alpha}, h.f.beta+":/shared")
 	onlyBeta.headers = http.Header{WorkspaceHeader: {h.f.alpha}}
 	match := MatchWorkspaceException(h.store.Load(), h.f.alpha, WorkspaceExceptionRequest{Binds: []string{h.f.beta + ":/shared"}})
 	if match.Applied() || match.Outcome != WorkspaceExceptionNotApplied {

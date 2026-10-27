@@ -377,7 +377,9 @@ single-container create:
   merges service labels that DCB does not manage), so labels are never
   identity: in a profile with `apply_workspace_exceptions`, every service's
   create names its workspace in the `X-Sockguard-Workspace` header, and a
-  label that disagrees with it is refused (see
+  label that disagrees with it is refused. Grant eligibility additionally
+  requires `devcontainer.local_folder == W` and all match conditions.
+  Unlabeled sidecars use BASE only, even with an own-`W` bind (see
   [Workspace exceptions](content/docs/workspace-exceptions.mdx#workspace-identity)).
 
 ### Ownership and label lookups
@@ -510,8 +512,9 @@ The proxy reads container inspect and `GET /volumes/{name}` for each named
 volume mount through its shared upstream resolver. Local-volume bind devices
 and bind sources are scoped to `W`'s own folders under every per-workspace
 root. Extra bind sources require a current create-equivalent match of the
-inspected container, including a workspace bind mount; throwaway requests
-get none. Client rules need not allow the proxy's internal inspect requests.
+inspected container, including a matching `devcontainer.local_folder == W`
+label and a workspace bind mount. Unlabeled BASE start/restart remains
+allowed; unlabeled and throwaway requests get no grants. Client rules need not allow the proxy's internal inspect requests.
 A failed volume lookup denies with `container_start_volume_inspect_failed`,
 without logging driver-option values. Profiles without the opt-in retain
 the no-narrowing rule and ignore workspace headers.

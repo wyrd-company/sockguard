@@ -1,3 +1,6 @@
+// relationships:
+//
+// references: [../../../docs/content/docs/workspace-exceptions]
 package filter
 
 import (
@@ -81,9 +84,10 @@ func (p containerCreatePolicy) inspectWithWorkspaceExceptions(logger *slog.Logge
 		if reason := workspaceLabelDenyReason(req.Labels, identity, "container create"); reason != "" {
 			return reason, nil
 		}
-		// Only the devcontainer header can match an exception; the
-		// throwaway header scopes binds and never grants.
-		if identity.Kind == WorkspaceIdentityDevcontainer {
+		// The header is identity; the matching primary label adds grant
+		// eligibility. An unlabeled service keeps the base policy even
+		// when it binds its own workspace. Throwaway requests never grant.
+		if identity.Kind == WorkspaceIdentityDevcontainer && req.Labels[WorkspaceLocalFolderLabel] == identity.Workspace {
 			match = MatchWorkspaceException(snap, identity.Workspace, matchReq)
 		}
 	}

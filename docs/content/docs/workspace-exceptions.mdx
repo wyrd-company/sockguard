@@ -6,7 +6,7 @@ description: Fork-only. The workspace exceptions file, which gives one workspace
 This page describes a change that exists only in the
 [wyrd-company fork](https://github.com/wyrd-company/sockguard).
 
-A workspace exception gives the containers of one workspace folder gates on
+A workspace exception gives eligible primary containers of one workspace folder gates on
 Docker-compat `POST /containers/create` that the base policy keeps closed. The
 operator writes the exceptions file, by hand or with the operator's own
 tooling. The proxy only reads it. A Menagerie deployment mounts the file's
@@ -211,6 +211,11 @@ The header names are fixed; there is no setting for them.
   Both labels together are denied, even when both equal `W`. An empty label
   is present. A label of the wrong kind is denied with
   `workspace label <label> disagrees with the request's workspace kind`.
+- Grant eligibility also requires `X-Sockguard-Workspace: W` plus a present
+  `devcontainer.local_folder: W` label. The label adds eligibility only; it
+  never supplies identity. An absent same-kind label permits ordinary BASE
+  create/start/restart, but no exception grant, including `restartPolicy` and
+  `extraBindSources`, even with an own-`W` bind. Throwaway requests never grant.
 - Exec create and exec start inspect the target container. Its same-kind
   workspace label must be present and exactly `W`; a target with neither
   label, a mismatched value, or an opposite-kind label is denied. Exec start
@@ -244,6 +249,8 @@ A create gets the grants of entry `W` when all of these are true:
 1. The base block sets `apply_workspace_exceptions: true`, and
    `X-Sockguard-Workspace` names `W` (see [Workspace identity](#workspace-identity)).
    The value is byte-equal to the entry's `workspace`; it is not cleaned.
+   The create must carry `devcontainer.local_folder` byte-equal to `W`
+   and no opposite-kind label. This adds grant eligibility only.
 2. The match-time workspace rules pass.
 3. Every host path the create mounts resolves inside `W`, inside `W`'s own
    folder under a per-workspace root (`<root>/<basename W>`, see
@@ -258,10 +265,10 @@ A create gets the grants of entry `W` when all of these are true:
 
 | Case | Result |
 | --- | --- |
-| Throwaway header | No exception. The base policy decides. |
+| Throwaway header or absent primary label | No exception. The base policy decides, even with an own-workspace bind. |
 | No entry has `W` | No exception. The base policy decides. |
 | An entry has `W`, and rule 3 or 4 fails | No exception. The base policy decides. When the base policy denies, the deny reason ends with the cause, for example `workspace exception not applied: a host path is outside the workspace and its extra bind sources (...)`. |
-| File invalid | No exception. A deny ends with `workspace exceptions unavailable: policy file invalid`. |
+| Eligible primary, file invalid | No exception. A deny ends with `workspace exceptions unavailable: policy file invalid`. |
 | Matched | The base policy plus `W`'s grants. |
 
 A failed match removes grants. It never denies a request that the base policy
@@ -290,8 +297,9 @@ through the archive API; it is not a bind source or a proxy mount.
   for exception matching, so binding the own socket or staging folder keeps
   the exception; another workspace's folder breaks it.
 - `extraBindSources` are a grant. They count only when the exception applies:
-  the devcontainer header, an entry for `W`, and a passing match. A create
-  whose match fails, and every throwaway request, gets none.
+  the devcontainer header, a matching primary label, an entry for `W`, and
+  a passing match. An unlabeled create, a create whose match fails, and
+  every throwaway request gets none.
 
 - The host paths are the ones the bind allowlist checks: `HostConfig.Binds`
   sources, `HostConfig.Mounts` binds, host-path `Config.Volumes` keys,
@@ -388,7 +396,8 @@ reloader, and runs whether or not `reload.enabled` is set.
   invalid load gives an error log with the cause and a
   `sockguard_workspace_exceptions_loads_total{result="invalid"}` count.
 - A revocation applies to later creates and removes extra bind sources from
-  later start/restart matches. An existing container keeps its other create
+  later start/restart matches. Start/restart extras also require the inspected
+  matching primary label. An existing container keeps its other create
   settings until it is recreated. Each start/restart reads the current
   snapshot once for identity scope and matching after inspecting its sources.
 
@@ -399,13 +408,15 @@ follow the same rules as any create: the workspace header, label agreement,
 bind-source agreement and per-workspace roots.
 
 - The workspace manager's client sends the header on every service's create,
-  so a service matches by its header, with or without a label.
+  so every service has workspace identity. A grant also requires a matching
+  primary label and all match conditions; an own-workspace bind alone is
+  insufficient. Unlabeled sidecars use only BASE create/start/restart.
 - devcontainer-builder 0.2.0 sets `devcontainer.local_folder` only on the
   primary service (read from `pkg/host/dockercompose/labels.go`,
   `containerLabels`, and `up.go`, which merges a service's own labels under
   the managed ones). A non-primary service carries whatever its Compose file
   sets, so a label that names another workspace is refused, and a service
-  without one is fine.
+  without one is valid for BASE operations and gets no exception grants.
 - The Compose project name and working folder are chosen by configuration
   and are never identity.
 - Compose configs and secrets are bind-mounted read-only from the staging
@@ -416,7 +427,7 @@ bind-source agreement and per-workspace roots.
   request for another workspace cannot reach them. The staging root must be
   in `per_workspace_roots` and `allowed_bind_mounts`, at the same path for the
   daemon host and the proxy.
-- `W`'s own staging folder counts as inside `W` for the bind agreement, so a
+- `W`'s own staging folder counts as inside `W` for the bind agreement, so an eligible primary
   service that mounts a staged config or secret keeps its exception with no
   `extraBindSources` entry. The same holds for its own socket folder.
 - `restart:` goes through `require_no_restart_policy` and the `restartPolicy`
@@ -459,7 +470,7 @@ exception` line with:
   its own mount namespace. Mount the workspace root into the proxy read-only
   at its host path, as [Symlink bind sources](/symlink-bind-sources) requires.
 - Use one canonical path for the workspace header, the
-  `devcontainer.local_folder` label (when set), the workspace bind source and
+  `devcontainer.local_folder` label (required for grants), the workspace bind source and
   the entry's `workspace`: the resolved root plus the folder name.
 - The workspace manager sets the header on the Docker client it uses for a
   workspace. A client it does not control (a build helper's own client, for

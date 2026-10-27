@@ -273,17 +273,18 @@ func TestServeChainForkStartWorkspaceIdentityAndScope(t *testing.T) {
 				})
 			}
 			t.Run("extras-current-inspected-match", func(t *testing.T) {
-				d.set([]string{alpha, extra}, nil, "")
+				d.set([]string{alpha, extra}, map[string]string{filter.WorkspaceLocalFolderLabel: alpha}, "")
 				chain.post(t, "/containers/c1/start", dev, 204, "")
+				d.set([]string{alpha, extra}, nil, "")
 				chain.post(t, "/containers/c1/start", throw, 403, "outside the request's workspace")
-				d.set([]string{extra}, nil, "")
+				d.set([]string{extra}, map[string]string{filter.WorkspaceLocalFolderLabel: alpha}, "")
 				chain.post(t, "/containers/c1/start", dev, 403, "outside the request's workspace")
 				// Exact prior Grok regression: beta-only extra, no alpha mount.
-				d.set([]string{filepath.Join(beta, "shared")}, nil, "")
+				d.set([]string{filepath.Join(beta, "shared")}, map[string]string{filter.WorkspaceLocalFolderLabel: alpha}, "")
 				chain.post(t, "/containers/c1/start", dev, 403, "outside the request's workspace")
 				d.set([]string{alpha, extra}, map[string]string{filter.WorkspaceThrowawayLabel: alpha}, "")
 				chain.post(t, "/containers/c1/start", dev, 403, "workspace label")
-				d.set([]string{alpha, extra}, nil, "")
+				d.set([]string{alpha, extra}, map[string]string{filter.WorkspaceLocalFolderLabel: alpha}, "")
 				chain.post(t, "/containers/c1/start", dev, 204, "")
 				write(false)
 				chain.store.Reload()
@@ -295,11 +296,11 @@ func TestServeChainForkStartWorkspaceIdentityAndScope(t *testing.T) {
 					t.Fatal(err)
 				}
 				chain.store.Reload()
-				d.set([]string{alpha, extra}, nil, "")
+				d.set([]string{alpha, extra}, map[string]string{filter.WorkspaceLocalFolderLabel: alpha}, "")
 				chain.post(t, "/containers/c1/start", dev, 403, "outside the request's workspace")
 				write(true)
 				chain.store.Reload()
-				d.set([]string{alpha, extra}, nil, "")
+				d.set([]string{alpha, extra}, map[string]string{filter.WorkspaceLocalFolderLabel: alpha}, "")
 				chain.post(t, "/containers/c1/start", dev, 204, "")
 			})
 			t.Run("volume-device", func(t *testing.T) {
@@ -317,7 +318,7 @@ func TestServeChainForkStartWorkspaceIdentityAndScope(t *testing.T) {
 				}
 				// A volume device alone must not satisfy the workspace-mount
 				// rule or lend an extra bind grant.
-				d.set(nil, nil, own)
+				d.set(nil, map[string]string{filter.WorkspaceLocalFolderLabel: alpha}, own)
 				chain.post(t, "/containers/c1/restart", dev, 403, "outside the request's workspace")
 				if err := os.Remove(own); err != nil {
 					t.Fatal(err)
@@ -325,10 +326,12 @@ func TestServeChainForkStartWorkspaceIdentityAndScope(t *testing.T) {
 				if err := os.Rename(own+".orig", own); err != nil {
 					t.Fatal(err)
 				}
-				d.set([]string{alpha}, nil, extra)
+				d.set([]string{alpha}, map[string]string{filter.WorkspaceLocalFolderLabel: alpha}, extra)
 				chain.post(t, "/containers/c1/start", dev, 204, "")
+				d.set([]string{alpha}, nil, extra)
+				chain.post(t, "/containers/c1/start", dev, 403, "outside the request's workspace")
 				chain.post(t, "/containers/c1/start", throw, 403, "outside the request's workspace")
-				d.set(nil, nil, extra)
+				d.set(nil, map[string]string{filter.WorkspaceLocalFolderLabel: alpha}, extra)
 				chain.post(t, "/containers/c1/start", dev, 403, "outside the request's workspace")
 			})
 		})
