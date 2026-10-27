@@ -88,6 +88,36 @@ entitlements of the build job, which come from the outer `Control/Solve`
 admitted. This is a check that the daemon makes, not the proxy. It also
 depends on the daemon's own entitlement configuration.
 
+## Session declarations
+
+On `POST /session`, each advertised `/service/method` is parsed with the
+same path parser as callbacks, then checked through `Classify` for the
+session endpoint and `Policy.Allowed` for that exact method. Only admitted
+original values are forwarded, in order and with repetitions preserved.
+Header names use standard HTTP canonicalization; surrounding whitespace is
+ignored for classification. Legacy bare-service declarations remain supported
+through their existing service gate, which requires at least one registered,
+policy-enabled method. They do not bypass per-method callback checks.
+
+With `session.file_sync.allow: true`, the producer's
+`/moby.filesync.v1.FileSync/DiffCopy` declaration remains available for local
+Dockerfile and context transfer. `TarStream` retains its existing classifier
+and policy denial. Unknown or disabled methods on an enabled service,
+malformed paths, session health and Control declarations are removed. Auth's
+four known methods require `session.auth.allow`; registry, realm and scope
+constraints still apply when the callback is mediated. Empty or absent
+advertisements do not invent declarations. No workspace header is required
+on either tunnel.
+
+`TestSessionAdvertisementProducerFullMethods` pins the producer's full-method
+shape and policy selection. `TestSessionAdvertisementExactMethodsAndLegacyForms`
+pins original values, repetitions, malformed inputs and legacy forms.
+`TestSessionAdvertisementUpgradeAndCallbacks` checks the forwarded upgrade
+and reverse callbacks: admitted Dockerfile/context frames remain byte-equal,
+and denied callbacks make zero calls to the client session server. Existing
+session/principal/profile, outer Solve, cancellation and resource limits
+continue to govern these callbacks.
+
 ## Residual risk: buildkit-traffic-not-inspectable
 
 The proxy does not inspect the content of any LLBBridge call. These reach the
