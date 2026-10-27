@@ -77,6 +77,7 @@ type call struct {
 	Method, Path string
 	Status       int
 	Header       bool
+	Force        bool
 	Reason       string
 }
 type recorder struct {
@@ -128,7 +129,7 @@ func (r *recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 		reason = string(body)
 	}
 	r.mu.Lock()
-	r.calls = append(r.calls, call{Method: req.Method, Path: req.URL.Path, Status: status, Header: req.Header.Get(workspaceHeader) != "" || req.Header.Get(throwawayHeader) != "", Reason: reason})
+	r.calls = append(r.calls, call{Method: req.Method, Path: req.URL.Path, Status: status, Header: req.Header.Get(workspaceHeader) != "" || req.Header.Get(throwawayHeader) != "", Reason: reason, Force: req.URL.Query().Get("force") == "1"})
 	r.mu.Unlock()
 	return resp, e
 }
@@ -569,6 +570,7 @@ func TestAcceptance(t *testing.T) {
 	p := f.startProxy(t, "baseline")
 	t.Run("DeploymentMountsAndCapabilities", func(t *testing.T) {
 		c := p.inspect(t)
+		must(t, deploymentPrivilege(c))
 		if c.Config.User != "0:0" || !c.HostConfig.ReadonlyRootfs || c.HostConfig.NetworkMode != "none" {
 			t.Fatalf("deployment flags drift: %+v", c.HostConfig)
 		}

@@ -365,7 +365,7 @@ func testArchive(t *testing.T, f *fixture, p *proxy) {
 	through := tarBytes(t, []*tar.Header{{Name: "tmp/destination", Typeflag: tar.TypeDir, Mode: 0755}, {Name: "tmp/link", Typeflag: tar.TypeSymlink, Linkname: "/tmp/destination", Mode: 0777}, {Name: "tmp/link/marker", Typeflag: tar.TypeReg, Mode: 0644}}, map[string]string{"tmp/link/marker": "through-link"})
 	e = c.CopyToContainer(f.ctx, id, "/", bytes.NewReader(through), container.CopyToContainerOptions{})
 	if e != nil {
-		t.Logf("WRITE_THROUGH_RESULT daemon_rejected=%v", e)
+		t.Logf("WRITE_THROUGH_RESULT copy_request_failed=%v; mount effect unmeasured", e)
 	} else {
 		r, _, e := c.CopyFromContainer(f.ctx, id, "/tmp/destination/marker")
 		must(t, e)
@@ -407,9 +407,7 @@ func testArchive(t *testing.T, f *fixture, p *proxy) {
 	foreign, e := f.direct.ContainerCreate(f.ctx, &container.Config{Image: f.baseImage, Labels: map[string]string{runLabel: f.run, "com.sockguard.owner": "different-owner"}}, nil, nil, nil, "")
 	must(t, e)
 	s, b = p.request(t, "GET", "/containers/"+foreign.ID+"/archive?path=/tmp", w, throwawayHeader, nil)
-	if s == 200 {
-		t.Fatal("read exfiltration reached foreign-owner fixture")
-	}
+	must(t, foreignArchiveDenial(s, b))
 	t.Logf("FOREIGN_READ status=%d body=%s", s, b)
 }
 

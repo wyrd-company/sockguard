@@ -13,6 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/volume"
+	dockerclient "github.com/docker/docker/client"
+
 	"github.com/wyrd-company/devcontainer-builder/pkg/builder"
 	dockerhost "github.com/wyrd-company/devcontainer-builder/pkg/host/docker"
 	"github.com/wyrd-company/devcontainer-builder/pkg/host/dockercompose"
@@ -120,14 +125,10 @@ func testDockerConsumer(t *testing.T, f *fixture, p *proxy) {
 	t.Logf("DCB_DOCKER_CALLS=%+v", calls.snapshot())
 	t.Run("LLBBridgeOffDeniesSameBuild", func(t *testing.T) {
 		off := f.startProxy(t, "llb-off")
-		offClient, _ := off.client(t, "", "")
+		offClient, offCalls := off.client(t, "", "")
 		_, e := b.Build(f.ctx, builder.Options{Spec: dc, Workspace: w, Docker: offClient, Tags: []string{"acceptance-off:" + f.run}, Labels: map[string]string{runLabel: f.run}, Load: true, NoCache: true, SkipFeatures: true, OmitSyntaxDirective: true, Progress: "plain", Stderr: os.Stderr, WorkDir: filepath.Join(w, "off-work")})
-		if e == nil {
-			t.Fatal("LLBBridge-off build unexpectedly succeeded")
-		}
-		if !strings.Contains(strings.ToLower(e.Error()), "denied") && !strings.Contains(strings.ToLower(e.Error()), "permission") {
-			t.Fatalf("build failed outside intended LLBBridge assertion: %v", e)
-		}
+		must(t, llbOffBuildDenial(e, offCalls.snapshot()))
+		t.Logf("LLB_OFF_CALLS=%+v", offCalls.snapshot())
 		t.Logf("LLB_OFF_INTENDED_DENIAL=%v", e)
 	})
 }
@@ -194,6 +195,14 @@ func testDockerIdentityConsumer(t *testing.T, f *fixture, p *proxy) {
 }
 
 func testComposeConsumer(t *testing.T, f *fixture, p *proxy) {
+	type populatedProject struct {
+		name, workspace string
+		host            *dockercompose.Host
+		single          *dockerhost.Host
+		initial, latest *dockercompose.UpResult
+		calls           *recorder
+	}
+	var projects []populatedProject
 	for _, name := range []string{"compose-a", "compose-b"} {
 		w := f.workspace(name)
 		socket := filepath.Join(f.root, "workspace-sockets", name)
@@ -222,25 +231,42 @@ configs:
 		}
 		compose("first")
 		cli, calls := p.client(t, w, workspaceHeader)
-		h := dockercompose.New(cli, dockercompose.Options{Stdout: os.Stdout, Stderr: os.Stderr, UserDataFolder: filepath.Join(f.root, "compose-staging", name)})
+		staging := filepath.Join(f.root, "compose-staging", name)
+		h := dockercompose.New(cli, dockercompose.Options{Stdout: os.Stdout, Stderr: os.Stderr, UserDataFolder: staging})
 		var first, second *dockercompose.UpResult
+		var ledger string
 		t.Run(name+"_Up", func(t *testing.T) {
 			var e error
 			first, e = h.Up(f.ctx, dockercompose.UpRequest{Spec: dc, SpecPath: dc.Path, LocalWorkspace: w})
 			must(t, e)
-			if len(first.ContainerIDs) != 2 {
-				t.Fatalf("wanted primary and sidecar: %+v", first)
-			}
+			_, e = composeServiceIDs(first.PrimaryContainerID, first.ContainerIDs)
+			must(t, e)
+			var sidecarMounts []container.MountPoint
 			for service, id := range first.ContainerIDs {
 				c, e := f.direct.ContainerInspect(f.ctx, id)
 				must(t, e)
 				if c.Config.Labels[runLabel] != f.run || c.Config.Labels["com.sockguard.owner"] != "menagerie" {
 					t.Fatalf("resource provenance/ownership missing: %s %+v", service, c.Config.Labels)
 				}
+				if service == "primary" && c.Config.Labels[primaryLabel] != w {
+					t.Fatal("primary fixture does not carry its own workspace label")
+				}
+				if service == "sidecar" {
+					sidecarMounts = c.Mounts
+				}
 				if service == "sidecar" && c.Config.Labels[primaryLabel] != "" {
 					t.Fatal("consumer sidecar unexpectedly has primary label")
 				}
 			}
+			// Read only this run/workspace's actual materialization record. Link its
+			// name/root labels to the inline config's inspected read-only bind.
+			records, e := f.direct.VolumeList(f.ctx, volume.ListOptions{Filters: filters.NewArgs(
+				filters.Arg("label", runLabel+"="+f.run), filters.Arg("label", primaryLabel+"="+w), filters.Arg("label", composeObjectRootLabel),
+			)})
+			must(t, e)
+			ledger, e = mountedConfigLedger(records.Volumes, sidecarMounts, f.run, w, staging, "menagerie")
+			must(t, e)
+			t.Logf("COMPOSE_MOUNTED_LEDGER workspace=%s name=%s mounts=%+v", w, ledger, sidecarMounts)
 		})
 		if first == nil {
 			continue
@@ -248,8 +274,17 @@ configs:
 		t.Run(name+"_ChangedSidecarUp", func(t *testing.T) {
 			compose("second")
 			var e error
+			upStart := len(calls.snapshot())
 			second, e = h.Up(f.ctx, dockercompose.UpRequest{Spec: dc, SpecPath: dc.Path, LocalWorkspace: w})
+			upCalls := calls.snapshot()
+			upEnd := len(upCalls)
 			must(t, e)
+			_, e = composeServiceIDs(second.PrimaryContainerID, second.ContainerIDs)
+			must(t, e)
+			must(t, ledgerRetirementDuringUp(upCalls, upStart, upEnd, ledger))
+			_, inspectErr := f.direct.VolumeInspect(f.ctx, ledger)
+			must(t, retiredLedgerAbsent(inspectErr))
+			t.Logf("COMPOSE_SECOND_UP_LEDGER_DELETE workspace=%s ledger=%s range=[%d,%d) calls=%+v", w, ledger, upStart, upEnd, upCalls[upStart:upEnd])
 			if second.PrimaryContainerID != first.PrimaryContainerID {
 				t.Fatal("unchanged primary was replaced")
 			}
@@ -260,38 +295,25 @@ configs:
 				t.Fatal("real allow_any_command did not execute Compose primary command")
 			}
 		})
-		t.Run(name+"_StopAndLookupIsolation", func(t *testing.T) {
-			must(t, h.Stop(f.ctx, w))
-			for _, id := range first.ContainerIDs {
-				c, e := f.direct.ContainerInspect(f.ctx, id)
-				if e == nil && c.State.Running {
-					t.Fatalf("own container still running: %s", id)
-				}
-			}
-			if second != nil {
-				for _, id := range second.ContainerIDs {
-					c, e := f.direct.ContainerInspect(f.ctx, id)
-					must(t, e)
-					if c.State.Running {
-						t.Fatalf("own second-up container still running: %s", id)
-					}
-				}
-			}
-			// A lookup for another W under the same owner must be empty, never
-			// the current project's first result (the original ownership defect).
+		t.Run(name+"_MissingWorkspaceLookup", func(t *testing.T) {
 			other := f.workspace(name + "-absent")
-			dh := dockerhost.New(cli, dockerhost.Options{})
-			_, e := dh.Inspect(f.ctx, other)
+			_, e := dockerhost.New(cli, dockerhost.Options{}).Inspect(f.ctx, other)
 			if e != dockerhost.ErrContainerNotFound {
-				t.Fatalf("workspace lookup crossed owner partition: %v", e)
+				t.Fatalf("missing workspace lookup crossed owner partition: %v", e)
 			}
 		})
+		if second != nil {
+			projects = append(projects, populatedProject{name: name, workspace: w, host: h, single: dockerhost.New(cli, dockerhost.Options{}), initial: first, latest: second, calls: calls})
+		}
 		t.Run(name+"_EndpointInventory", func(t *testing.T) {
 			observed := calls.snapshot()
-			for _, want := range []struct{ method, path string }{{"GET", "/networks"}, {"POST", "/networks/create"}, {"GET", "/volumes"}, {"POST", "/volumes/create"}, {"DELETE", "/volumes/"}} {
+			for _, want := range []struct {
+				method, path string
+				status       int
+			}{{"GET", "/networks", 200}, {"POST", "/networks/create", 201}, {"GET", "/volumes", 200}, {"POST", "/volumes/create", 201}} {
 				found := false
 				for _, c := range observed {
-					if c.Method == want.method && strings.Contains(c.Path, want.path) && c.Status >= 200 && c.Status < 300 {
+					if exactAPICall(c, want.method, want.path, want.status) {
 						found = true
 					}
 				}
@@ -300,6 +322,56 @@ configs:
 				}
 			}
 			t.Logf("DCB_COMPOSE_CALLS workspace=%s calls=%+v", name, observed)
+		})
+	}
+	t.Run("PopulatedWorkspaceLookupIsolation", func(t *testing.T) {
+		if len(projects) != 2 {
+			t.Fatalf("two populated workspace projects required, got %d", len(projects))
+		}
+		for _, project := range projects {
+			t.Run(project.name, func(t *testing.T) {
+				wantPrimary := []string{project.latest.PrimaryContainerID}
+				single, e := project.single.Inspect(f.ctx, project.workspace)
+				must(t, e)
+				must(t, workspaceLookupIDs(project.workspace, []string{single.ID}, wantPrimary))
+				primary, e := project.host.InspectPrimary(f.ctx, project.workspace)
+				must(t, e)
+				must(t, workspaceLookupIDs(project.workspace, []string{primary.ID}, wantPrimary))
+				inspected, e := project.host.Inspect(f.ctx, project.workspace)
+				must(t, e)
+				var got, want []string
+				for _, c := range inspected.Containers {
+					got = append(got, c.ID)
+				}
+				for _, id := range project.latest.ContainerIDs {
+					want = append(want, id)
+				}
+				must(t, workspaceLookupIDs(project.workspace, got, want))
+				t.Logf("TWO_POPULATED_LOOKUPS workspace=%s single=%s primary=%s project=%v expected=%v", project.workspace, single.ID, primary.ID, got, want)
+			})
+		}
+	})
+	for _, project := range projects {
+		t.Run(project.name+"_Stop", func(t *testing.T) {
+			must(t, project.host.Stop(f.ctx, project.workspace))
+			for _, id := range project.initial.ContainerIDs {
+				c, e := f.direct.ContainerInspect(f.ctx, id)
+				if dockerclient.IsErrNotFound(e) {
+					continue
+				}
+				must(t, e)
+				if c.State.Running {
+					t.Fatalf("own initial container still running: %s", id)
+				}
+			}
+			for _, id := range project.latest.ContainerIDs {
+				c, e := f.direct.ContainerInspect(f.ctx, id)
+				must(t, e)
+				if c.State.Running {
+					t.Fatalf("own second-up container still running: %s", id)
+				}
+			}
+			t.Logf("DCB_COMPOSE_STOP_CALLS workspace=%s calls=%+v", project.workspace, project.calls.snapshot())
 		})
 	}
 	t.Run("ForgedComposeSidecarLabelDenied", func(t *testing.T) {
