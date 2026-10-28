@@ -32,7 +32,7 @@ func TestMiddlewareOwnerLabelFilterAcceptsLegacyFilterEncoding(t *testing.T) {
 	}))
 
 	legacy := `{"label":{"existing=1":true},"status":{"running":true,"paused":true}}`
-	req := httptest.NewRequest(http.MethodGet, "/containers/json?filters="+url.QueryEscape(legacy), nil)
+	req := httptest.NewRequest(http.MethodGet, "/services?filters="+url.QueryEscape(legacy), nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

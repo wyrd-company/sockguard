@@ -15,6 +15,8 @@ package buildkitproxy
 type Policy struct {
 	Control ControlPolicy
 	Session SessionPolicy
+	// LLBBridge is the fork's opt-in LLBBridge passthrough (llbbridge.go).
+	LLBBridge LLBBridgePolicy
 }
 
 // Configured reports whether p was set to anything other than every field
@@ -64,7 +66,8 @@ func (p Policy) Configured() bool {
 		len(p.Session.SSH.AllowedIDs) > 0 ||
 		p.Session.FileSync.Allow ||
 		p.Session.FileSend.Allow ||
-		p.Session.Upload.Allow
+		p.Session.Upload.Allow ||
+		p.LLBBridge.AllowUninspectedPassthrough
 }
 
 // Allowed reports whether p's per-field configuration admits a call to

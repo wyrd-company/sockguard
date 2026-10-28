@@ -48,6 +48,9 @@ var ImmutableFields = []string{
 	"reload.enabled",
 	"reload.debounce",
 	"reload.poll_interval",
+	// Fork-owned: the exceptions file path and workspace root are bound to
+	// the exceptions store and its watcher at startup.
+	"workspace_exceptions",
 }
 
 // ImmutableDiff returns the names of immutable config fields whose values
@@ -141,6 +144,10 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 	}
 	if oldCfg.Reload.PollInterval != newCfg.Reload.PollInterval {
 		changed = append(changed, "reload.poll_interval")
+	}
+	// Fork-owned: see the workspace_exceptions entry in ImmutableFields.
+	if !reflect.DeepEqual(oldCfg.WorkspaceExceptions, newCfg.WorkspaceExceptions) {
+		changed = append(changed, "workspace_exceptions")
 	}
 	return changed
 }

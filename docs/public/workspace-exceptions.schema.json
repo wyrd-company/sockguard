@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://getsockguard.com/docs/workspace-exceptions.schema.json",
+  "title": "Sockguard workspace exceptions file",
+  "description": "Fork-only (wyrd-company/sockguard). Per-workspace grants on Docker-compat POST /containers/create. The proxy validates the file itself; this schema does not express the rules that need the configured workspace_root or the filesystem.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "exceptions"],
+  "properties": {
+    "version": { "const": 1 },
+    "exceptions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "hostPath": {
+      "type": "string",
+      "pattern": "^/",
+      "not": { "const": "/" },
+      "description": "An absolute, clean path other than /."
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspace", "grants", "approval"],
+      "properties": {
+        "workspace": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "An absolute, clean path with no trailing slash, and a direct child of workspace_root. Unique across entries."
+        },
+        "grants": { "$ref": "#/$defs/grants" },
+        "approval": { "$ref": "#/$defs/approval" }
+      }
+    },
+    "grants": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "privileged": { "type": "boolean" },
+        "capAdd": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^([Cc][Aa][Pp]_)?[A-Za-z0-9_]+$" }
+        },
+        "namespaces": {
+          "type": "array",
+          "items": { "enum": ["pid", "ipc", "network", "userns", "cgroupns"] }
+        },
+        "devices": { "type": "array", "items": { "$ref": "#/$defs/hostPath" } },
+        "deviceCgroupRules": { "type": "array", "items": { "type": "string" } },
+        "gpus": { "type": "boolean" },
+        "extraBindSources": { "type": "array", "items": { "$ref": "#/$defs/hostPath" } },
+        "securityOpt": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "enum": [
+                  "seccomp=unconfined",
+                  "apparmor=unconfined",
+                  "label=disable",
+                  "systempaths=unconfined"
+                ]
+              },
+              { "type": "string", "pattern": "^apparmor=[A-Za-z0-9_][A-Za-z0-9_./-]*$" }
+            ]
+          }
+        },
+        "runtimes": { "type": "array", "items": { "type": "string", "pattern": "^\\S+$" } },
+        "sysctls": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_./-]*$" }
+        },
+        "restartPolicy": {
+          "type": "array",
+          "items": { "enum": ["always", "unless-stopped", "on-failure"] }
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["by", "at"],
+      "properties": {
+        "by": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issuer", "subject"],
+          "properties": {
+            "issuer": { "type": "string", "minLength": 1 },
+            "subject": { "type": "string", "minLength": 1 },
+            "name": { "type": "string" }
+          }
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "An RFC 3339 timestamp in UTC."
+        },
+        "note": { "type": "string", "maxLength": 500 }
+      }
+    }
+  }
+}

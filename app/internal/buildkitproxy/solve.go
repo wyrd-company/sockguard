@@ -28,8 +28,9 @@
 //     FrontendAttrs, so a client-supplied Definition alongside a non-empty
 //     Frontend is not meaningfully actionable here and is left to the
 //     frontend/daemon.
-//   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): denied outright
-//     — see checkSolveCache.
+//   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): admitted only
+//     as an exact copy of Exporters[0], denied otherwise — see
+//     checkSolveDeprecatedExporter (fork).
 //   - Session (5): names the session the daemon calls back through for
 //     Auth/Secrets/SSH/FileSync. It must pass the same canonical identifier
 //     validation as POST /session before admission can publish correlated
@@ -330,6 +331,8 @@ func checkSolveFrontend(req *control.SolveRequest, solvePolicy SolvePolicy) *med
 			return deny(grpcCodeFailedPrecondition, "buildkit_schema_unsupported", "unsupported BuildKit schema")
 		}
 		switch {
+		case key == "build-arg:BUILDKIT_SYNTAX" && !solvePolicy.AllowRunInstructions:
+			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "BuildKit syntax frontend overrides cannot be inspected while RUN instructions are restricted")
 		case (key == "context" || strings.HasPrefix(key, "context:")) && isRemoteContextRef(value):
 			if !solvePolicy.AllowRemoteContext {
 				return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "a remote build context requires this profile's allow_remote_context")
@@ -426,8 +429,8 @@ func definitionIsExecFree(def *pb.Definition, maxDepth int) bool {
 // fields unenforced would be a real bypass channel for an ostensibly
 // unknown-but-actually-just-old wire shape, not a compatibility nicety.
 func checkSolveCache(req *control.SolveRequest, solvePolicy SolvePolicy) *mediationDenial {
-	if req.GetExporterDeprecated() != "" || len(req.GetExporterAttrsDeprecated()) > 0 {
-		return deny(grpcCodeFailedPrecondition, "buildkit_schema_unsupported", "unsupported BuildKit schema")
+	if d := checkSolveDeprecatedExporter(req); d != nil {
+		return d
 	}
 
 	cache := req.GetCache()
@@ -582,8 +585,9 @@ func checkSolveRemainingFields(req *control.SolveRequest) *mediationDenial {
 // deliberately NOT checked here — it needs the bridge's SessionRegistry and
 // SessionKey, which this decode-only, bridge-independent function has no
 // access to and shouldn't: see bridge.go's forwardControlMediated, which
-// calls this first and then separately consults
-// SessionRegistry.OwnsRef(b.session.Key, req.GetRef()) before admitting.
+// calls this first, then waits via SessionRegistry.waitForRef for an admitted
+// Solve to own the exact ref under the same trusted client identity and profile
+// before forwarding the original request frame.
 func evaluateStatusRequest(payload []byte) (*control.StatusRequest, *mediationDenial) {
 	req := &control.StatusRequest{}
 	if err := proto.Unmarshal(payload, req); err != nil {

@@ -19,19 +19,11 @@ responsibly.
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, use
-[GitHub's private vulnerability reporting](https://github.com/CodesWhat/sockguard/security/advisories/new)
-or email **<security@getsockguard.com>**. GitHub private reports are
-preferred because they keep report details private and tie disclosure to
-the advisory and fix workflow.
-
-For non-security contact, email **<hi@getsockguard.com>**.
-
-You can expect:
-
-- **Acknowledgement** within 48 hours
-- **Status update** within 7 days
-- **Fix or mitigation** as soon as feasible, depending on severity
+This repository is the wyrd-company fork of sockguard. Report a
+vulnerability in it through
+[GitHub's private vulnerability reporting](https://github.com/wyrd-company/sockguard/security/advisories/new)
+on this repository. A private report keeps its details private and ties
+disclosure to the advisory and fix workflow.
 
 We appreciate responsible disclosure and will credit reporters in the
 release notes unless you prefer to stay anonymous.
@@ -43,8 +35,8 @@ release notes unless you prefer to stay anonymous.
 - The Go proxy at `app/` — filter engine, ownership middleware, client
   ACLs, hijack/upgrade handling, access log, `/health` endpoint, config
   parsing, CLI flags.
-- The published container image at `ghcr.io/codeswhat/sockguard:<tag>`,
-  including its SBOM, build provenance, and cosign signatures.
+- The published container image at `ghcr.io/wyrd-company/sockguard:<tag>`,
+  including its SBOM and build provenance attestations.
 - Any compiled binary distributed via a GitHub release tagged
   `v0.x.x` or `v1.x.x` or later.
 
@@ -128,9 +120,3 @@ severity. Please include as much of the following as you can:
   physical access.
 - **Disclosure timeline** — when you found it, whether you've told
   anyone else, and whether a specific embargo date suits you.
-
-If the bug involves a supply-chain concern (a tampered image, a cosign
-verification failure, a compromised dependency), also include the
-exact `cosign verify` command you ran and its full output. See the
-[image verification guide](docs/content/docs/verification.mdx) for
-the canonical invocation.

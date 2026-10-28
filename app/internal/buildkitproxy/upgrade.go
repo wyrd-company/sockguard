@@ -1,3 +1,8 @@
+/*
+relationships:
+
+	references: [registry.go, policy.go, grpcpath.go]
+*/
 package buildkitproxy
 
 import (
@@ -26,8 +31,8 @@ const h2cDialTimeout = 5 * time.Second
 const sessionUUIDHeader = "X-Docker-Expose-Session-Uuid"
 
 // sessionGRPCMethodHeader advertises, on a POST /session upgrade request,
-// which gRPC services the client's session server has registered (e.g.
-// "moby.filesync.v1.FileSync", "moby.filesync.v1.Auth") so buildkitd knows
+// which gRPC methods the client's session server has registered (e.g.
+// "/moby.filesync.v1.FileSync/DiffCopy") so buildkitd knows
 // what it can call back into. rewriteSessionAdvertisement narrows this to
 // the intersection of "advertised" and "permitted" before sockguard forwards
 // the upgrade to the daemon.
@@ -94,30 +99,29 @@ func headerHasToken(h http.Header, name, token string) bool {
 }
 
 // rewriteSessionAdvertisement narrows the client's sessionGRPCMethodHeader
-// advertisement (read from dst) down to services ServiceAdmittedByPolicy
-// reports as having at least one method that is BOTH non-Deny per Classify
-// AND allowed by p, replacing the header's values on dst in place. Consulting
-// p here — not just the static registry — matters: a service can be
-// registered Mediate/Passthrough in principle while this operator's resolved
-// policy still leaves it off (e.g. Auth advertised while
-// p.Session.Auth.Allow is false), and advertising it anyway would invite a
-// daemon callback the bridge only rejects after the fact instead of the
-// daemon never being told the service is available at all. If dst carries no
-// advertisement at all, dst is left untouched.
+// advertisement to methods BOTH non-Deny per Classify AND allowed by the
+// resolved policy. Legacy bare-service declarations retain their existing
+// ServiceAdmittedByPolicy gate. A full method never inherits admission from
+// another method of its service. Retained values keep their original spelling,
+// order and multiplicity; trimming is only for classification. If dst carries
+// no advertisement at all, dst is left untouched. Callback content, ownership
+// and lifecycle checks remain the bridge's responsibility.
 func rewriteSessionAdvertisement(dst http.Header, p Policy) {
 	advertised := dst.Values(sessionGRPCMethodHeader)
 	if len(advertised) == 0 {
 		return
 	}
 	dst.Del(sessionGRPCMethodHeader)
-	for _, service := range advertised {
-		service = strings.TrimSpace(service)
-		if service == "" {
+	for _, value := range advertised {
+		declaration := strings.TrimSpace(value)
+		if service, rpcMethod, ok := ParseGRPCPath(declaration); ok {
+			if Classify(EndpointSession, service, rpcMethod) == Deny || !p.Allowed(EndpointSession, service, rpcMethod) {
+				continue
+			}
+		} else if !ServiceAdmittedByPolicy(EndpointSession, declaration, p) {
 			continue
 		}
-		if ServiceAdmittedByPolicy(EndpointSession, service, p) {
-			dst.Add(sessionGRPCMethodHeader, service)
-		}
+		dst.Add(sessionGRPCMethodHeader, value)
 	}
 }
 

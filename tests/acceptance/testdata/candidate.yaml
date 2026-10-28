@@ -1,0 +1,280 @@
+# Sockguard fork: candidate config for the Menagerie client profile.
+#
+# Contract: docs/content/docs/workspace-exceptions.mdx,
+# docs/content/docs/symlink-bind-sources.mdx, docs/fork-endpoints.md and
+# docs/content/docs/buildkit-llb-bridge.mdx in the reviewed fork.
+#
+# Paths are placeholders. Each host path in allowed_bind_mounts and in
+# workspace_exceptions must be mounted into the proxy container read-only at
+# the same path (the bind resolver reads the filesystem in its own mount
+# namespace).
+
+upstream:
+  socket: /var/run/docker.sock
+
+# One Unix listener, for the Menagerie workspace service only. The socket
+# directory is mounted into the Menagerie container.
+# Mode 0660 with a dedicated group (sockguard-menagerie). Only the workspace
+# service is in that group. The template service shares its UID, so the UID
+# cannot tell them apart; the group does. socket_uid is not set: the socket
+# owner stays the proxy's UID, so the shared UID gets no owner access.
+# The listener admits only the menagerie profile, so a peer that does not
+# resolve to it is denied (listener_profile_not_allowed).
+listeners:
+  - name: menagerie
+    socket: /run/sockguard/menagerie.sock
+    socket_mode: "0660"
+    socket_gid: 20001 # sockguard-menagerie (placeholder GID)
+    allowed_profiles: [menagerie]
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+response:
+  deny_verbosity: verbose
+  # Compose finds its mounted object roots from Mounts[].Source in
+  # GET /containers/json. Redaction makes Up leak old object roots.
+  redact_mount_paths: false
+
+# Command containers read files back through GET /containers/*/archive.
+# Ownership bounds it: the profile reaches only containers that carry this
+# proxy's owner label, so the read-exfiltration routes admit no container
+# outside Menagerie's own. Image save (GET /images/get, /images/*/get) stays
+# denied by explicit profile rules. This flag is proxy-wide.
+insecure_allow_read_exfiltration: true
+
+# Owner-label isolation. This block is proxy-wide, not per profile.
+# Client non-owner label filters on non-Swarm lists are ANDed with the
+# owner filter, so workspace lookups remain separate.
+ownership:
+  owner: menagerie
+  label_key: com.sockguard.owner
+  # Base images pulled through the proxy and images built by BuildKit carry
+  # no owner label.
+  allow_unowned_images: true
+
+# These keys need a restart to change.
+workspace_exceptions:
+  # The proxy mounts /etc/sockguard/exceptions (the directory, not the file)
+  # read-only. The operator writes the file by hand; Menagerie mounts the
+  # directory read-only and never writes it.
+  file: /etc/sockguard/exceptions/workspace-exceptions.json
+  # Absolute, canonical (no symlinks). Each direct child is one workspace.
+  workspace_root: /srv/workspaces
+  per_workspace_roots:
+    - /srv/workspaces
+    - /srv/workspace-sockets
+    - /srv/compose-staging
+
+clients:
+  # UID-only SO_PEERCRED matching selects the profile. The socket group may
+  # be supplementary: file-mode access is separate from peer matching.
+  # SO_PEERCRED reports primary GID only; no GID matcher is configured.
+  unix_peer_profiles:
+    - profile: menagerie
+      uids: [10001] # Menagerie runtime UID (placeholder). The listener's 0660
+                    # mode and socket_gid keep out callers outside the group.
+
+  profiles:
+    - name: menagerie
+      mode: enforce
+
+      request_body:
+        network:
+          # Compose networks must use the bridge driver.
+          # Container create and network connect cannot join an existing
+          # network of another driver either.
+          allowed_drivers: [bridge]
+        container_create:
+          # Host-identical paths: workspace root and the Compose
+          # config/secret staging folder (DCB UserDataFolder). Hooks copy
+          # template files through the archive API, not a bind.
+          allowed_bind_mounts:
+            - /srv/workspaces
+            - /srv/compose-staging
+            # Each workspace's devcontainer mounts its own socket folder.
+            - /srv/workspace-sockets
+          allow_privileged: false
+          allow_host_network: false
+          allow_host_pid: false
+          allow_host_ipc: false
+          # Header identity is required on create/start/restart/exec. Grants
+          # require the matching primary label and own-workspace bind. An
+          # unlabeled BASE request gets no grants; sidecars and throwaways
+          # get none. Opposite-kind, both-kind and mismatch labels are denied.
+          # Exec requires an actual same-kind target label equal to the header.
+          apply_workspace_exceptions: true
+          # Deny RestartPolicy other than empty or "no";
+          # a workspace grant restartPolicy: [...] admits listed names.
+          require_no_restart_policy: true
+          # ExtraHosts and GroupAdd: always denied by the inspector. No key.
+
+        container_remove:
+          # Rebuild = RemoveByID with force=1&v=1; Compose recreate uses force=1.
+          allow_force: true
+          allow_remove_volumes: true
+
+        exec:
+          # Lift the argv gate. Bounded by ownership,
+          # allow_privileged false and the target container's own limits.
+          allow_any_command: true
+          allow_root_user: true # DCB PatchSystemEnv runs as root
+          allow_privileged: false
+
+        container_archive:
+          # PUT /containers/*/archive (hook file copy) targets path=/.
+          # Explicit root bound. Unsafe entry names, setuid/setgid
+          # entries and device nodes stay denied. Absolute link targets
+          # are admitted; entry names themselves must remain safe/relative.
+          allowed_paths: ["/"]
+          allow_setid: false
+          allow_device_nodes: false
+          allow_escaping_links: true # templates and candidates carry absolute links (venvs)
+
+        image_pull:
+          allow_imports: false
+          # Placeholder. List the registries that workspace templates use.
+          allowed_registries:
+            - registry.example.test
+
+        build:
+          allow_remote_context: false
+          allow_host_network: false
+          # Devcontainer Dockerfiles use RUN. Without this, Dockerfile solves
+          # with RUN are denied.
+          allow_run_instructions: true
+
+        buildkit:
+          control:
+            allow_info: false # not called by the audited DCB solve path
+            allow_list_workers: true # client.Build calls ListWorkers first
+            allow_status: true # build progress; ref-owner gated
+            solve:
+              allow: true
+              # Host-daemon export with Load=true selects exporter "moby".
+              allowed_exporters: [moby]
+              # Cache import/export and exporter registries stay empty: no
+              # push, no registry cache.
+          # Per profile only (top-level form is rejected).
+          # Forwards known LLBBridge methods on /grpc without inner
+          # inspection. Outer Solve checks stay: security.insecure always
+          # denied; network.host denied by build.allow_host_network false.
+          llb_bridge:
+            allow_uninspected_passthrough: true
+          session:
+            file_sync:
+              allow: true # Dockerfile and local context
+            auth:
+              # Registry credentials for base-image resolution. Placeholder
+              # registry; realm/scope allowlists match exactly and are left
+              # for the acceptance suite to establish.
+              allow: true
+              allowed_registries:
+                - registry.example.test
+            # secrets, ssh, file_send, upload: off (DCB attaches none; moby
+            # export needs no FileSend).
+
+      rules:
+        # Explicit denials first, so each has a named reason in the log.
+        - match: { method: POST, path: "/images/**/push" }
+          action: deny
+          reason: "menagerie: image push is not permitted"
+        - match: { method: GET, path: "/images/get" }
+          action: deny
+          reason: "menagerie: image save is not permitted"
+        - match: { method: GET, path: "/images/**/get" }
+          action: deny
+          reason: "menagerie: image save is not permitted"
+        - match: { method: POST, path: "/images/load" }
+          action: deny
+          reason: "menagerie: image load is not permitted"
+        - match: { method: "*", path: "/libpod/**" }
+          action: deny
+          reason: "menagerie: libpod API is not permitted"
+
+        # Version negotiation
+        - match: { method: HEAD, path: "/_ping" }
+          action: allow
+        - match: { method: GET, path: "/_ping" }
+          action: allow
+        # Host OS/arch/runtimes (image platform, GPU detect)
+        - match: { method: GET, path: "/info" }
+          action: allow
+
+        # Containers: lookup, inspect, lifecycle, rebuild
+        - match: { method: GET, path: "/containers/json" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/json" }
+          action: allow
+        - match: { method: POST, path: "/containers/create" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/start" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/stop" }
+          action: allow
+        - match: { method: DELETE, path: "/containers/*" }
+          action: allow
+
+        # Command containers (hooks, initializeCommand): attach for output,
+        # wait for the exit code, archive to copy files in and out.
+        - match: { method: POST, path: "/containers/*/attach" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/wait" }
+          action: allow
+        - match: { method: PUT, path: "/containers/*/archive" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/archive" }
+          action: allow
+
+        # Exec (lifecycle commands, env probes)
+        - match: { method: POST, path: "/containers/*/exec" }
+          action: allow
+        - match: { method: POST, path: "/exec/*/start" }
+          action: allow
+        - match: { method: GET, path: "/exec/*/json" }
+          action: allow
+
+        # Images: inspect (slash-bearing names) and pull
+        - match: { method: GET, path: "/images/**/json" }
+          action: allow
+        - match: { method: POST, path: "/images/create" }
+          action: allow
+
+        # Mediated BuildKit tunnels
+        - match: { method: POST, path: "/grpc" }
+          action: allow
+        - match: { method: POST, path: "/session" }
+          action: allow
+
+        # Compose: narrow network and volume rows. Not /networks/** or
+        # /volumes/** (those add connect, disconnect, prune, inspect).
+        # DELETE /networks/* is omitted: only DCB Host.Remove calls it, and
+        # Menagerie does not.
+        - match: { method: GET, path: "/networks" }
+          action: allow
+        - match: { method: POST, path: "/networks/create" }
+          action: allow
+        - match: { method: GET, path: "/volumes" }
+          action: allow
+        - match: { method: POST, path: "/volumes/create" }
+          action: allow
+        # Up retires old object-record volumes, so this is not teardown-only.
+        - match: { method: DELETE, path: "/volumes/*" }
+          action: allow
+
+        - match: { method: "*", path: "/**" }
+          action: deny
+          reason: "menagerie: not in the Menagerie profile"
+
+# Root fallback policy. No client reaches it through the menagerie listener
+# (allowed_profiles), but keep it closed.
+rules:
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "no profile"

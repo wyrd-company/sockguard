@@ -9,6 +9,7 @@ const routes = [
   "/compare/wollomatic",
   "/docs",
   "/docs/admin",
+  "/docs/buildkit-llb-bridge",
   "/docs/cis-docker-benchmark",
   "/docs/configuration",
   "/docs/getting-started",
@@ -19,7 +20,9 @@ const routes = [
   "/docs/presets",
   "/docs/roadmap",
   "/docs/security",
+  "/docs/symlink-bind-sources",
   "/docs/verification",
+  "/docs/workspace-exceptions",
 ] as const;
 
 export const ANALYTICS_ROUTES: ReadonlySet<string> = new Set(routes);

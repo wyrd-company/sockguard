@@ -153,7 +153,7 @@ func TestListLabelFilterKeepsVisibilityScopeWhileDroppingClientValues(t *testing
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := forwardedFilters(t, "/v1.53/containers/json?filters="+url.QueryEscape(tc.clientFilter),
+			got := forwardedFilters(t, "/v1.53/services?filters="+url.QueryEscape(tc.clientFilter),
 				Options{Owner: "team-a"},
 				visibility.Options{VisibleResourceLabels: []string{"tier=prod"}},
 			)
@@ -172,7 +172,7 @@ func TestListLabelFilterKeepsVisibilityScopeWhileDroppingClientValues(t *testing
 // injected upstream of it, ownership still forwards exactly the owner label.
 func TestListLabelFilterUnchangedWithoutVisibilitySelectors(t *testing.T) {
 	t.Parallel()
-	got := forwardedFilters(t, "/v1.53/containers/json?filters="+url.QueryEscape(`{"label":["tier=dev"]}`),
+	got := forwardedFilters(t, "/v1.53/services?filters="+url.QueryEscape(`{"label":["tier=dev"]}`),
 		Options{Owner: "team-a"},
 		visibility.Options{},
 	)

@@ -223,6 +223,13 @@ func (b *bridge) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if llbBridgePassthroughAdmitted(b.legs.endpoint, service, method, b.policy) {
+		// Fork: opt-in uninspected LLBBridge passthrough (llbbridge.go).
+		b.audit(service, method, Passthrough, "", llbBridgeUninspectedAttr())
+		b.forward(w, r, service, method)
+		return
+	}
+
 	disposition := Classify(b.legs.endpoint, service, method)
 	switch disposition {
 	case Mediate, Passthrough:
@@ -450,7 +457,7 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 	case "Status":
 		var req *control.StatusRequest
 		req, d = evaluateStatusRequest(payload)
-		if d == nil && !b.registry.OwnsRef(b.session.Key, req.GetRef()) {
+		if d == nil && !b.registry.waitForRef(r.Context(), b.session, req.GetRef()) {
 			d = deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "this ref does not belong to an admitted Solve for this client/profile")
 		}
 	default:

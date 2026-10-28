@@ -332,6 +332,7 @@ func drydockPresetHandlerFromConfig(t *testing.T, cfg *config.Config, configureP
 	// assignment here so preset conformance tests exercise the same
 	// production wiring instead of a stub that always leaves it false.
 	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	policy.ForkStartRecheck.InspectContainer = forkStartRecheckPresetInspector
 	for _, configure := range configurePolicy {
 		configure(&policy)
 	}

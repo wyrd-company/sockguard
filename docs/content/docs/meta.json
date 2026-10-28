@@ -4,6 +4,7 @@
     "index",
     "getting-started",
     "configuration",
+    "buildkit-llb-bridge",
     "multi-host",
     "presets",
     "podman",
@@ -13,6 +14,8 @@
     "migration",
     "roadmap",
     "security",
-    "verification"
+    "symlink-bind-sources",
+    "verification",
+    "workspace-exceptions"
   ]
 }

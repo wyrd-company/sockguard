@@ -1,0 +1,174 @@
+---
+title: BuildKit LLBBridge passthrough
+description: Fork-only. The per-profile setting that forwards BuildKit LLBBridge calls on POST /grpc without inspection, what stays checked, the deprecated exporter field rule, and the residual risk buildkit-traffic-not-inspectable.
+---
+
+This page describes changes that exist only in the
+[wyrd-company fork](https://github.com/wyrd-company/sockguard).
+
+The BuildKit SDK's `client.Build` runs the build function in the client. It
+calls the `moby.buildkit.v1.frontend.LLBBridge` gRPC service on the same
+connection as `moby.buildkit.v1.Control`, which is the `POST /grpc` tunnel.
+Tools that build this way, such as devcontainer-builder, send
+`LLBBridge/Ping`, `ResolveImageConfig`, `Solve`, `Return` and other LLBBridge
+calls during each build. The mediator does not inspect LLBBridge, so without
+this setting it denies every LLBBridge call with `buildkit_method_denied`.
+
+## The setting
+
+```yaml
+clients:
+  profiles:
+    - name: builder
+      request_body:
+        buildkit:
+          control:
+            allow_list_workers: true             # client.Build calls ListWorkers first
+            allow_status: true                   # progress for the build's own ref
+            solve:
+              allow: true                        # required by llb_bridge
+          session:
+            file_sync:
+              allow: true                        # local build contexts
+          llb_bridge:
+            allow_uninspected_passthrough: true  # default false
+      rules:
+        - match: { method: POST, path: /grpc }
+          action: allow
+        - match: { method: POST, path: /session }
+          action: allow
+```
+
+| Rule | Behavior |
+| --- | --- |
+| Default | `false`. LLBBridge is denied on `POST /grpc` and `POST /session`. |
+| Scope | Client profiles only. The key under the top-level `request_body` (or `SOCKGUARD_REQUEST_BODY_BUILDKIT_LLB_BRIDGE_ALLOW_UNINSPECTED_PASSTHROUGH`) fails validation, because the top level applies to every client that no profile selects. A client gets the passthrough only when it is selected into a profile that sets it. |
+| Precondition | The same profile must set `request_body.buildkit.control.solve.allow: true`. LLBBridge calls only act inside a build job that an outer `Control/Solve` starts. |
+| Endpoint | `POST /grpc` only. LLBBridge on `POST /session` stays denied. |
+| Methods | `ResolveImageConfig`, `ResolveSourceMeta`, `Solve`, `ReadFile`, `ReadDir`, `StatFile`, `Evaluate`, `Ping`, `Return`, `Inputs`, `NewContainer`, `ReleaseContainer`, `ExecProcess`, `ReadFileContainer`, `ReadDirContainer`, `StatFileContainer`, `Warn`. Any other method name on the service is denied. |
+| Forwarding | Byte for byte. The per-stream size cap (64 MiB by default) still applies. |
+| Audit | Each call logs a `buildkit_rpc` event with `disposition=passthrough` and `uninspected=true`. |
+
+The other switches in the example are the ones a `client.Build` client
+usually needs; set the session `auth`, `secrets` and `ssh` blocks and the
+solve allowlists for what the client really sends.
+
+The setting is not related to `insecure_accept_opaque_buildkit_tunnels`. It
+does not need that flag, and the two tunnels stay mediated: every other
+service and method on them is classified and checked as before.
+
+## What stays checked
+
+With the setting on, the outer `Control/Solve` that starts the build job is
+still decoded and checked:
+
+- `security.insecure` is always denied.
+- `network.host` is denied unless `request_body.build.allow_host_network` is
+  `true` on the same profile.
+- The frontend allowlist (`""` and `dockerfile.v0`; `gateway.v0` is denied),
+  the frontend attribute allowlist, the cache type and registry allowlists,
+  the exporter type and push registry allowlists, the source policy denials,
+  and the deprecated cache-ref denial.
+- `Control/Status` reaches the daemon only after an admitted Solve owns the
+  ref for the same trusted client identity and profile. A Status that arrives
+  first waits for that admission. It creates no ownership, and a denied Solve
+  or a Solve from another identity or profile cannot release it. Request
+  cancellation or tunnel/session closure ends the wait; the existing stream
+  and message bounds apply, with no additional timeout.
+
+On `POST /session`, the Auth, Secrets, SSH, FileSync, FileSend and Upload
+mediation and their switches are unchanged.
+
+BuildKit itself checks every op that an LLBBridge `Solve` loads, and every
+container that `NewContainer` or `ExecProcess` starts, against the
+entitlements of the build job, which come from the outer `Control/Solve`
+(`solver/llbsolver/bridge.go` in BuildKit v0.18.2). Because the proxy denies
+`security.insecure` on the outer Solve, and `network.host` without
+`allow_host_network`, an inner op cannot get those modes from a job the proxy
+admitted. This is a check that the daemon makes, not the proxy. It also
+depends on the daemon's own entitlement configuration.
+
+## Session declarations
+
+On `POST /session`, each advertised `/service/method` is parsed with the
+same path parser as callbacks, then checked through `Classify` for the
+session endpoint and `Policy.Allowed` for that exact method. Only admitted
+original values are forwarded, in order and with repetitions preserved.
+Header names use standard HTTP canonicalization; surrounding whitespace is
+ignored for classification. Legacy bare-service declarations remain supported
+through their existing service gate, which requires at least one registered,
+policy-enabled method. They do not bypass per-method callback checks.
+
+With `session.file_sync.allow: true`, the producer's
+`/moby.filesync.v1.FileSync/DiffCopy` declaration remains available for local
+Dockerfile and context transfer. `TarStream` retains its existing classifier
+and policy denial. Unknown or disabled methods on an enabled service,
+malformed paths, session health and Control declarations are removed. Auth's
+four known methods require `session.auth.allow`; registry, realm and scope
+constraints still apply when the callback is mediated. Empty or absent
+advertisements do not invent declarations. No workspace header is required
+on either tunnel.
+
+`TestSessionAdvertisementProducerFullMethods` pins the producer's full-method
+shape and policy selection. `TestSessionAdvertisementExactMethodsAndLegacyForms`
+pins original values, repetitions, malformed inputs and legacy forms.
+`TestSessionAdvertisementUpgradeAndCallbacks` checks the forwarded upgrade
+and reverse callbacks: admitted Dockerfile/context frames remain byte-equal,
+and denied callbacks make zero calls to the client session server. Existing
+session/principal/profile, outer Solve, cancellation and resource limits
+continue to govern these callbacks.
+
+## Residual risk: buildkit-traffic-not-inspectable
+
+The proxy does not inspect the content of any LLBBridge call. These reach the
+daemon as the client sent them:
+
+- inner LLB ops and their definitions, including `ExecOp` commands, mounts,
+  network mode and security mode;
+- frontends and frontend options named in an inner `Solve`, including
+  `dockerfile.v0` builds of a Dockerfile the proxy never reads;
+- sources: image references, Git and HTTP URLs, and local source names;
+- interactive containers (`NewContainer`, `ExecProcess`) and file reads from
+  build results.
+
+So for a profile with the setting on:
+
+- `request_body.build.allow_run_instructions: false` does not stop `RUN`
+  steps or exec ops in inner solves.
+- `request_body.build.allow_remote_context: false` does not stop remote
+  sources in inner solves.
+- Image references in inner solves are not checked against any registry
+  allowlist. The session `auth` allowlists still apply to the credentials the
+  daemon asks the client for.
+
+LLBBridge calls are not bound to a build ref that the caller owns. The SDK
+starts the LLBBridge calls at the same time as the outer `Control/Solve`, so a
+binding check would race the Solve's ref registration. The SDK makes each
+build ref a random value, and no other client can read it: `Control/Status`
+needs ownership and `ListenBuildHistory` is denied.
+
+Set the passthrough only on a profile for a client you trust to send the
+build graphs it builds.
+
+## Deprecated exporter fields
+
+`Control/Solve` has two deprecated fields, `ExporterDeprecated` and
+`ExporterAttrsDeprecated`. The BuildKit SDK (v0.18.2) copies its first
+exporter into them on every Solve. A current daemon reads them only when
+`Exporters` is empty.
+
+The mediator admits them only when they are an exact copy of `Exporters[0]`:
+the same type, and the same attributes (an empty and a missing map are
+equal). `Exporters[0]` itself must pass `allowed_exporters` and
+`allowed_exporter_registries`. Every other shape is denied with
+`buildkit_schema_unsupported`:
+
+- deprecated fields with no `Exporters`;
+- a deprecated type that differs from `Exporters[0].Type`, including one that
+  equals a later exporter;
+- deprecated attributes that differ from `Exporters[0].Attrs` in any key or
+  value.
+
+This rule needs no setting and applies to every profile. The deprecated
+cache-ref fields (`Cache.ExportRefDeprecated`, `ImportRefsDeprecated`,
+`ExportAttrsDeprecated`) are still denied.

@@ -1,7 +1,7 @@
 # --platform=$BUILDPLATFORM: the builder always runs natively and CROSS-compiles
 # for $TARGETARCH. Running the amd64 toolchain under qemu/Rosetta emulation is
 # both slow and unreliable (Go runtime faults during go mod download).
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.23@sha256:2ac5c2a64f1f970b5120fe21c6a5e3d9190b196a9ead95797564738ecd07a8a2 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS builder
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -24,10 +24,10 @@ RUN install -d -m 0700 /runtime/sockguard && touch /runtime/sockguard/.volume-in
 
 FROM cgr.dev/chainguard/static:latest@sha256:399c8cb4858f05aaa33f43f02a2e75f28d40f016c0f86e5ba6075769e3303791
 
-LABEL maintainer="CodesWhat"
+LABEL maintainer="wyrd-company"
 LABEL org.opencontainers.image.title="sockguard"
 LABEL org.opencontainers.image.description="Docker socket proxy — guide what gets through"
-LABEL org.opencontainers.image.source="https://github.com/CodesWhat/sockguard"
+LABEL org.opencontainers.image.source="https://github.com/wyrd-company/sockguard"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=builder /sockguard /sockguard

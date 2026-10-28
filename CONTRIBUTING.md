@@ -7,10 +7,10 @@ Questions or ideas? Start a [GitHub Discussion](https://github.com/CodesWhat/soc
 ## Getting started
 
 1. **Fork** the repository and clone your fork.
-2. **Install Go 1.26+** (required for the proxy):
+2. **Install Go 1.27+** (required for the proxy):
 
    ```bash
-   go version  # should be 1.26+
+   go version  # should be 1.27+
    ```
 
 3. **Install Node.js 24** for the website and docs workspaces. It is the version CI uses and the one `.nvmrc` selects; the root `package.json` accepts Node 22 or newer, but only 24 is exercised in CI:
@@ -131,6 +131,10 @@ refactor(proxy): simplify middleware chain
 - **`httptest`** for HTTP handler and middleware tests
 - **Fuzz tests** for filter/config parsing
 - Coverage floor: 96%+ of production code (enforced by the CI coverage gate in `ci-verify.yml`; test harnesses/helpers excluded; ratchet up as coverage climbs)
+
+### Fork real-daemon acceptance
+
+Prepare the bootstrap image outside the wrapper with `docker pull docker:29.9.2-dind`, then run `make acceptance` from the repository root. The local operator owns that prerequisite; CI prepares it as ephemeral runner infrastructure before the protected baseline. The wrapper verifies and pins its immutable ID without pulling or removing it. The target builds the exact fork image and drives the pinned consumer in an owned dind fixture. `ACCEPTANCE_STORE=classic make acceptance` selects the classic image store; the default is containerd. Locally built `ACCEPTANCE_DAEMON_IMAGE` overrides remain supported. The tests use the `sockguardacceptance` build tag in a separate module, so ordinary Go tests need no daemon. See [the acceptance guide](tests/acceptance/README.md) for inputs, controls, logs and cleanup.
 
 ### TypeScript
 

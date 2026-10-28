@@ -183,6 +183,17 @@ type ContainerCreateOptions struct {
 	// AllowEndpointConfig is cross-wired from request_body.network.allow_endpoint_config.
 	// Only consulted when AllowEndpointConfig is false.
 	EndpointConfig EndpointConfigOptions
+	// NetworkDrivers is the fork's allowed_drivers check on the networks a
+	// create attaches to, cross-wired from request_body.network.
+	// See fork_network_driver.go.
+	NetworkDrivers NetworkDriverOptions
+
+	// Fork-owned (wyrd-company/sockguard); see container_create_workspace.go.
+	ApplyWorkspaceExceptions bool
+	RequireNoRestartPolicy   bool
+	// WorkspaceExceptions is the runtime exceptions store, attached by the
+	// serve command; nil when workspace_exceptions.file is unset.
+	WorkspaceExceptions *WorkspaceExceptionStore
 }
 
 type containerCreatePolicy struct {
@@ -229,6 +240,11 @@ type containerCreatePolicy struct {
 
 	allowEndpointConfig bool
 	endpointConfig      EndpointConfigOptions
+	networkDrivers      networkDriverPolicy
+
+	applyWorkspaceExceptions bool
+	requireNoRestartPolicy   bool
+	workspaceExceptions      *WorkspaceExceptionStore
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -324,6 +340,10 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
 		endpointConfig:                    opts.EndpointConfig,
+		networkDrivers:                    newNetworkDriverPolicy(opts.NetworkDrivers),
+		applyWorkspaceExceptions:          opts.ApplyWorkspaceExceptions,
+		requireNoRestartPolicy:            opts.RequireNoRestartPolicy,
+		workspaceExceptions:               opts.WorkspaceExceptions,
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
@@ -1355,6 +1375,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyRequiredLabelsReason(*createReq); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.networkDrivers.denyContainerCreateDriverReason(r.Context(), body); denyReason != "" {
+		return denyReason, nil
+	}
 
 	if p.imageTrustVerifier != nil {
 		imageRef := strings.TrimSpace(createReq.Image)
@@ -1861,8 +1884,14 @@ func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
 	if rawSource, _, hasDest := strings.Cut(bind, ":"); hasDest && strings.HasPrefix(rawSource, ".") {
 		return fmt.Sprintf("container create denied: bind mount source %q is not an absolute path", rawSource)
 	}
-	if source, ok := extractAndValidateBindSource(bind, containerCreateMount{}); ok && !bindPathAllowed(source, p.allowedBindMounts) {
-		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
+	if source, ok := extractAndValidateBindSource(bind, containerCreateMount{}); ok {
+		if !bindPathAllowed(source, p.allowedBindMounts) {
+			return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
+		}
+		rawSource, _, _ := strings.Cut(bind, ":")
+		if denyReason := denySymlinkedBindSourceReason("container create", "bind mount source", rawSource, source, p.allowedBindMounts); denyReason != "" {
+			return denyReason
+		}
 	}
 	// A Podman upstream reads the spec's third field as mount options and
 	// takes an overlay's upper and work directory from them, for a named
@@ -1969,7 +1998,7 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 	for _, mount := range hostConfig.Mounts {
 		if mount.VolumeOptions != nil && mount.VolumeOptions.DriverConfig != nil {
 			driverConfig := mount.VolumeOptions.DriverConfig
-			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create"); denyReason != "" {
+			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create", resolveBindSymlinks); denyReason != "" {
 				return denyReason
 			}
 		}
@@ -1999,10 +2028,12 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 			// than skipping it.
 			return fmt.Sprintf("container create denied: bind mount source %q is not an absolute path", mount.Source)
 		}
-		if bindPathAllowed(source, p.allowedBindMounts) {
-			continue
+		if !bindPathAllowed(source, p.allowedBindMounts) {
+			return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 		}
-		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
+		if denyReason := denySymlinkedBindSourceReason("container create", "bind mount source", mount.Source, source, p.allowedBindMounts); denyReason != "" {
+			return denyReason
+		}
 	}
 
 	return ""

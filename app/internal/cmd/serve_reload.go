@@ -305,6 +305,12 @@ func (c *reloadCoordinator) reload() {
 		return
 	}
 
+	if err := checkReloadBindRoots(newCfg, c.logger); err != nil {
+		c.logger.Error("config reload rejected: bind root validation failed", "result", "reject_validation", "path", c.cfgFile, "error", err)
+		c.runtime.metrics.ObserveConfigReload("reject_validation")
+		return
+	}
+
 	newHandler, newTeardown, newLimiterStateActive := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         newCfg,
 		Logger:      c.logger,

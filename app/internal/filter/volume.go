@@ -145,7 +145,7 @@ func (p volumePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 	}
 
 	for _, options := range []map[string]string{req.DriverOpts, req.Opts} {
-		if denyReason := denyLocalVolumeBindDeviceReason(req.Driver, options, p.allowedBindMounts, "volume create"); denyReason != "" {
+		if denyReason := denyLocalVolumeBindDeviceReason(req.Driver, options, p.allowedBindMounts, "volume create", resolveBindSymlinks); denyReason != "" {
 			return denyReason, nil
 		}
 	}

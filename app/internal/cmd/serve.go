@@ -176,11 +176,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			}
 		}()
 	}
+	if err := checkBindRootVisibility(cfg, logger); err != nil {
+		return err
+	}
 	warnIfDefaultProfileExcluded(cfg, logger)
 	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
 	if err != nil {
 		return fmt.Errorf("upstream: %w", err)
+	}
+	if err := runtime.loadWorkspaceExceptions(cfg, logger); err != nil {
+		logger.Error("workspace root validation failed", "error", err)
+		return fmt.Errorf("workspace exceptions: %w", err)
 	}
 	if err := verifyUpstreamReachableForRuntime(cmd.Context(), deps, runtime, cfg, logger); err != nil {
 		return err
@@ -308,6 +315,8 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	defer stopWatchdog()
 	stopReadiness := runtime.startReadiness(cmd.Context(), cfg)
 	defer stopReadiness()
+	stopWorkspaceExceptions := runtime.watchWorkspaceExceptions(cmd.Context(), cfg, logger)
+	defer stopWorkspaceExceptions()
 
 	bannerLines := bannerListenerLines(members, cfg.EffectiveListeners())
 	if adminMember != nil {
@@ -596,6 +605,8 @@ type serveRuntime struct {
 	// and upstream.flavor are all reload-immutable, so no reload can point
 	// sockguard at a different daemon or restate which engine this one is.
 	upstreamFlavor upstreamflavor.Flavor
+	// workspaceExceptions is fork-owned; see serve_workspace_exceptions.go.
+	workspaceExceptions *filter.WorkspaceExceptionStore
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
@@ -691,7 +702,7 @@ func buildServeClientProfiles(cfg *config.Config, res *upstream.Resolver) (map[s
 		return nil, err
 	}
 	for name, profile := range clientProfiles {
-		profile.PolicyConfig = attachRuntimeInspectors(cfg, res, profile.PolicyConfig)
+		profile.PolicyConfig = attachRuntimeInspectors(cfg, res, withGlobalDenyVerbosity(cfg, profile.PolicyConfig))
 		clientProfiles[name] = profile
 	}
 	return clientProfiles, nil
@@ -711,6 +722,10 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// path above, even though both are checked against the SAME execPolicy
 	// (#148 design doc decision C3) — see ExecOptions.InspectStartLibpod.
 	policy.Exec.InspectStartLibpod = filter.NewLibpodExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
+	// Fork-owned: container start and restart re-check their bind sources
+	// through the same resolver (filter/fork_start_recheck.go).
+	policy.ForkStartRecheck.InspectContainer = filter.NewForkStartRecheckInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
+	policy.ForkStartRecheck.InspectVolume = filter.NewForkStartRecheckVolumeInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
 	// insecure_allow_body_blind_writes is a global, not-per-profile setting
 	// (validateBodyBlindWriteRulesForPolicy in rules.go says as much), so it
 	// is wired here rather than through RequestBodyConfig.ToFilterOptions —
@@ -723,7 +738,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// so there is no body to inspect and only the acknowledgment admits it.
 	policy.ImageLoad.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	policy.ContainerUpdate.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
-	return policy
+	return attachNetworkDriverInspector(cfg, res, policy)
 }
 
 func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, runtime *serveRuntime) http.Handler {
@@ -806,7 +821,8 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
-		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles)),
+		namedServeHandlerLayer("withFilter", withFilterOptions(cfg, logger, rules, clientProfiles,
+			attachWorkspaceExceptions(serveFilterOptions(cfg, resolver, clientProfiles), runtimeWorkspaceExceptions(runtime)))),
 		// withFormBodyGuard is appended right AFTER withFilter so it executes
 		// immediately BEFORE it. Every layer above reads request parameters
 		// from the URL query, and both engines also read them from a form
@@ -1117,9 +1133,15 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 }
 
 func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
+	return withFilterOptions(cfg, logger, rules, clientProfiles, serveFilterOptions(cfg, res, clientProfiles))
+}
+
+// withFilterOptions is withFilter with the filter options already built, so
+// the handler chain can attach runtime state to them first.
+func withFilterOptions(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, opts filter.Options) func(http.Handler) http.Handler {
 	warnIfBodyBlindWritesEnabled(cfg, logger)
 	warnIfReadExfiltrationEnabled(cfg, rules, clientProfiles, logger)
-	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, res, clientProfiles))
+	return filter.MiddlewareWithOptions(rules, logger, opts)
 }
 
 // bodyBlindWritesWarnOnce gates warnIfBodyBlindWritesEnabled to a single

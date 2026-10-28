@@ -97,6 +97,7 @@ func validateBasic(cfg *Config, mode validateMode) []string {
 	}
 	errs = append(errs, validateReload(cfg)...)
 	errs = append(errs, validatePolicyBundle(cfg)...)
+	errs = append(errs, validateWorkspaceExceptions(cfg)...)
 	errs = append(errs, validateRequestBody(cfg)...)
 	errs = append(errs, validateMutationsConfig(cfg)...)
 	errs = append(errs, validateRules(cfg)...)
@@ -932,6 +933,7 @@ func validateRequestBody(cfg *Config) []string {
 	errs = append(errs, validateRequestBodyConfig("request_body", cfg.RequestBody)...)
 	errs = append(errs, validateNetworkEndpointConfig(cfg)...)
 	errs = append(errs, validateBuildkitAckMutualExclusion(cfg)...)
+	errs = append(errs, validateBuildkitLLBBridge(cfg)...)
 	errs = append(errs, validateClientsConfig(cfg)...)
 	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
 		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
@@ -1758,6 +1760,7 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
 	errs = append(errs, validateLibpodPodCreateConfig(prefix, cfg.LibpodPodCreate)...)
 	errs = append(errs, validateBuildkitConfig(prefix, cfg.Buildkit)...)
+	errs = append(errs, validateNetworkAllowedDrivers(prefix, cfg)...)
 	return errs
 }
 

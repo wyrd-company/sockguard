@@ -38,6 +38,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ...[
       "getting-started",
       "configuration",
+      "buildkit-llb-bridge",
       "multi-host",
       "presets",
       "podman",
@@ -47,7 +48,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
       "migration",
       "roadmap",
       "security",
+      "symlink-bind-sources",
       "verification",
+      "workspace-exceptions",
     ].map((slug) => ({
       url: `${BASE_URL}/docs/${slug}`,
       lastModified: new Date(),

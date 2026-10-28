@@ -1,0 +1,186 @@
+// relationships:
+//
+// references: [../../../docs/content/docs/workspace-exceptions]
+package filter
+
+import (
+	"fmt"
+	"net/http"
+	"slices"
+)
+
+// Fork-owned (wyrd-company/sockguard): workspace scope of the start re-check.
+//
+// A policy that applies workspace exceptions takes a request's workspace W
+// only from a header the workspace manager sets, never from a container
+// label, since a client can write any label. A start or restart under such a
+// policy must name W; the container's identity labels must be absent or equal
+// W; and each bind source, as written and after resolution, must stay inside
+// W's folders under the per-workspace roots, inside the base allowlist
+// elsewhere, or inside one of W's extra bind sources. Extra bind sources are
+// exceptions and require the devcontainer header plus a matching primary
+// label on the inspected container. Unlabeled and throwaway containers get
+// only the base scope, even with an own-workspace bind.
+
+// Reason codes of the workspace scope. A deny reason never quotes a header
+// value.
+const (
+	forkStartRecheckReasonCodeWorkspaceMissing       = "container_start_workspace_missing"
+	forkStartRecheckReasonCodeWorkspaceAmbiguous     = "container_start_workspace_ambiguous"
+	forkStartRecheckReasonCodeWorkspaceInvalid       = "container_start_workspace_invalid"
+	forkStartRecheckReasonCodeWorkspaceLabelMismatch = "container_start_workspace_label_mismatch"
+	forkStartRecheckReasonCodeOutsideWorkspace       = "container_start_bind_source_outside_workspace"
+)
+
+// ForkStartRecheckWorkspace is the workspace a request names.
+type ForkStartRecheckWorkspace struct {
+	// Path is the workspace path W, as the header gives it.
+	Path string
+	// Throwaway is set for a throwaway workspace, which gets no exceptions.
+	Throwaway bool
+	// Request is reconstructed from the current container and volume inspects,
+	// so extra bind grants require the same match as container create.
+	Request WorkspaceExceptionRequest
+}
+
+// ForkStartRecheckWorkspaceScope is what a workspace's bind sources may use.
+type ForkStartRecheckWorkspaceScope struct {
+	// Roots are the per-workspace roots. A path under one of them belongs to
+	// one workspace.
+	Roots []string
+	// Folders are W's folders, one under each root.
+	Folders []string
+	// ExtraBindSources are W's extra bind sources. They are empty for a
+	// throwaway workspace.
+	ExtraBindSources []string
+}
+
+// ForkStartRecheckWorkspaceFunc validates W and returns its scope. An error
+// means W is not a valid workspace.
+type ForkStartRecheckWorkspaceFunc func(ForkStartRecheckWorkspace) (ForkStartRecheckWorkspaceScope, error)
+
+func forkStartRecheckWorkspaceDenied(code, reason string) error {
+	return newRequestRejectionErrorWithCode(http.StatusForbidden, code, reason)
+}
+
+// forkStartRecheckWorkspaceFromHeaders reads W from the request. Exactly one
+// header with exactly one non-empty value is accepted.
+// The headers are read by WorkspaceFromHeaders, the reader container create
+// and exec use too.
+func forkStartRecheckWorkspaceFromHeaders(header http.Header, subject string) (ForkStartRecheckWorkspace, error) {
+	id, problem := WorkspaceFromHeaders(header)
+	switch problem {
+	case WorkspaceHeaderMissing:
+		return ForkStartRecheckWorkspace{}, forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceMissing,
+			fmt.Sprintf("%s denied: the request names no workspace (set %s or %s)", subject, WorkspaceHeader, WorkspaceThrowawayHeader))
+	case WorkspaceHeaderAmbiguous:
+		return ForkStartRecheckWorkspace{}, forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceAmbiguous,
+			fmt.Sprintf("%s denied: the request names more than one workspace", subject))
+	case WorkspaceHeaderEmpty:
+		return ForkStartRecheckWorkspace{}, forkStartRecheckWorkspaceInvalid(subject)
+	}
+	return ForkStartRecheckWorkspace{Path: id.Workspace, Throwaway: id.Kind == WorkspaceIdentityThrowaway}, nil
+}
+
+func forkStartRecheckWorkspaceInvalid(subject string) error {
+	return forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceInvalid,
+		fmt.Sprintf("%s denied: the workspace header does not name a valid workspace", subject))
+}
+
+// denyWorkspace applies the workspace scope to an inspected container.
+func (p forkStartRecheckPolicy) denyWorkspace(subject string, workspace ForkStartRecheckWorkspace, container ForkStartRecheckContainer, sources []forkStartRecheckSource) error {
+	id := WorkspaceIdentity{Kind: WorkspaceIdentityDevcontainer, Workspace: workspace.Path}
+	if workspace.Throwaway {
+		id.Kind = WorkspaceIdentityThrowaway
+	}
+	if reason := workspaceLabelDenyReason(container.Config.Labels, id, subject); reason != "" {
+		return forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeWorkspaceLabelMismatch, reason)
+	}
+	scope, err := p.workspace(workspace)
+	if err != nil {
+		return forkStartRecheckWorkspaceInvalid(subject)
+	}
+	if workspace.Throwaway || container.Config.Labels[WorkspaceLocalFolderLabel] != workspace.Path {
+		scope.ExtraBindSources = nil
+	}
+	allowed := newForkStartRecheckWorkspaceAllowed(scope, p.workspaceBase)
+	for _, source := range sources {
+		if reason := allowed.denyReason(subject, source); reason != "" {
+			return forkStartRecheckWorkspaceDenied(forkStartRecheckReasonCodeOutsideWorkspace, reason)
+		}
+	}
+	return nil
+}
+
+// forkStartRecheckWorkspaceAllowed holds the paths a location may use. A
+// location written by the request is compared with the entries as configured,
+// a resolved one with the entries resolved the way the create check resolves
+// its allowlist. W's folders are never resolved: a folder replaced with a
+// symlink into another workspace must not carry the sources under it along.
+type forkStartRecheckWorkspaceAllowed struct {
+	roots []string
+	// underRoot is used under a root: W's folders and extra bind sources.
+	underRoot, underRootResolved []string
+	// elsewhere is used outside the roots: the base allowlist and W's extra
+	// bind sources, as configured and resolved.
+	elsewhere, elsewhereResolved []string
+}
+
+func newForkStartRecheckWorkspaceAllowed(scope ForkStartRecheckWorkspaceScope, base []string) forkStartRecheckWorkspaceAllowed {
+	elsewhere := append(slices.Clone(base), scope.ExtraBindSources...)
+	return forkStartRecheckWorkspaceAllowed{
+		roots:             scope.Roots,
+		underRoot:         append(slices.Clone(scope.Folders), scope.ExtraBindSources...),
+		underRootResolved: append(slices.Clone(scope.Folders), resolveBindAllowlist(scope.ExtraBindSources)...),
+		elsewhere:         elsewhere,
+		elsewhereResolved: resolveBindAllowlist(elsewhere),
+	}
+}
+
+// location reports whether a path may be bound, or, when created is set,
+// created on the way to a bind source.
+func (a forkStartRecheckWorkspaceAllowed) location(location string, resolved, created bool) bool {
+	allowed := a.elsewhere
+	if resolved {
+		allowed = a.elsewhereResolved
+	}
+	if bindPathAllowed(location, a.roots) {
+		allowed = a.underRoot
+		if resolved {
+			allowed = a.underRootResolved
+		}
+	}
+	if created {
+		return createdBindDirAllowed(location, allowed)
+	}
+	return bindPathAllowed(location, allowed)
+}
+
+// denyReason checks one source: as written, and in each spelling the create
+// check resolves, the resolved path and every directory the walk would
+// create. A source that cannot be resolved is denied, since where it leads is
+// unknown.
+func (a forkStartRecheckWorkspaceAllowed) denyReason(subject string, source forkStartRecheckSource) string {
+	if !a.location(source.clean, false, false) {
+		return fmt.Sprintf("%s denied: bind mount source %q is outside the request's workspace", subject, source.clean)
+	}
+	spellings := []string{source.clean}
+	if hasDotDotComponent(source.raw) {
+		spellings = append(spellings, source.raw)
+	}
+	for _, spelling := range spellings {
+		resolved, created, err := walkBindSource(spelling)
+		if err != nil {
+			return fmt.Sprintf("%s denied: bind mount source %q cannot be resolved: %v", subject, spelling, err)
+		}
+		if !a.location(resolved, true, false) {
+			return fmt.Sprintf("%s denied: bind mount source %q resolves to %q, which is outside the request's workspace", subject, spelling, resolved)
+		}
+		for _, dir := range created {
+			if !a.location(dir, true, true) {
+				return fmt.Sprintf("%s denied: bind mount source %q creates directory %q, which is outside the request's workspace", subject, spelling, dir)
+			}
+		}
+	}
+	return ""
+}

@@ -1178,12 +1178,14 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	if err != nil {
 		return err
 	}
-	filterKey := ownerFilterKey(filter.NormalizePath(r.URL.Path))
+	normPath := filter.NormalizePath(r.URL.Path)
+	filterKey := ownerFilterKey(normPath)
 	label := labelKey + "=" + owner
 	// Client-supplied values under this key are dropped: Swarm's control-plane
 	// lists fold `label` into a map[string]string over a randomly-ordered
 	// Args.Get, so a client value repeating the owner key can displace the
-	// proxy-enforced one.
+	// proxy-enforced one. The fork keeps them on the lists that AND every
+	// value; see fork_label_filter.go.
 	//
 	// Selectors sockguard itself injected earlier in the chain survive that
 	// drop. The visibility middleware runs first and writes the same key, and
@@ -1198,6 +1200,9 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 		if !slices.Contains(values, selector) {
 			values = append(values, selector)
 		}
+	}
+	if forkOwnershipKeepsClientLabels(normPath) {
+		values = forkOwnershipAppendClientLabels(values, filters[filterKey], labelKey)
 	}
 	filters[filterKey] = values
 	encoded, err := json.Marshal(filters)

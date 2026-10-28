@@ -20,6 +20,7 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	containerCreate := c.ContainerCreate.ToFilterOptions()
 	containerCreate.AllowEndpointConfig = c.Network.AllowEndpointConfig
 	containerCreate.EndpointConfig = c.Network.EndpointConfig.ToFilterOptions()
+	containerCreate.NetworkDrivers = c.Network.networkDriverOptions()
 
 	// volume.allowed_bind_mounts is deliberately NOT its own YAML key either.
 	// A local-driver volume whose options ask for a bind
@@ -128,6 +129,8 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenySelinuxLabelOverride:          c.DenySelinuxLabelOverride,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
+		ApplyWorkspaceExceptions:          c.ApplyWorkspaceExceptions,
+		RequireNoRestartPolicy:            c.RequireNoRestartPolicy,
 	}
 }
 
@@ -200,6 +203,7 @@ func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 		AllowedEnvVars:   c.AllowedEnvVars,
 		DeniedEnvVars:    c.DeniedEnvVars,
 		AllowedEnvValues: c.AllowedEnvValues,
+		AllowAnyCommand:  c.AllowAnyCommand,
 	}
 }
 
@@ -278,6 +282,7 @@ func (c NetworkRequestBodyConfig) ToFilterOptions() filter.NetworkOptions {
 		AllowDisconnectForce:   c.AllowDisconnectForce,
 		AllowDisableIPv4:       c.AllowDisableIPv4,
 		AllowDNSServers:        c.AllowDNSServers,
+		Drivers:                c.networkDriverOptions(),
 	}
 }
 

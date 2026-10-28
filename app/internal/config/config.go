@@ -105,6 +105,9 @@ type Config struct {
 	InsecureAllowBodyBlindWrites  bool               `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool               `mapstructure:"insecure_allow_read_exfiltration"`
 
+	// WorkspaceExceptions is fork-owned; see workspace_exceptions.go.
+	WorkspaceExceptions WorkspaceExceptionsConfig `mapstructure:"workspace_exceptions"`
+
 	// explicitLegacyListen records whether the legacy listen.* fields were
 	// set explicitly — a YAML key, a SOCKGUARD_LISTEN_* environment
 	// variable, or the --listen-socket CLI flag — as opposed to left at
@@ -660,6 +663,14 @@ type ContainerCreateRequestBodyConfig struct {
 	// Options entry can override that default per-mount, so it is denied
 	// unless explicitly allowed. Default false.
 	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
+
+	// Fork-owned (wyrd-company/sockguard); see workspace_exceptions.go.
+	// ApplyWorkspaceExceptions opts this block in to the workspace
+	// exceptions file. RequireNoRestartPolicy denies a
+	// HostConfig.RestartPolicy.Name other than "" or "no", unless a matched
+	// workspace exception grants it. Both default false.
+	ApplyWorkspaceExceptions bool `mapstructure:"apply_workspace_exceptions"`
+	RequireNoRestartPolicy   bool `mapstructure:"require_no_restart_policy"`
 }
 
 // LibpodContainerCreateRequestBodyConfig configures body inspection for
@@ -794,6 +805,12 @@ type ExecRequestBodyConfig struct {
 	// values are compared but never included in denial reasons or logs. Names
 	// not represented here continue to follow AllowedEnvVars/DeniedEnvVars.
 	AllowedEnvValues []string `mapstructure:"allowed_env_values"`
+	// AllowAnyCommand, when true and AllowedCommands is empty, admits any
+	// exec argv on create and start. It lifts only the empty-allowlist
+	// gate: AllowPrivileged, AllowRootUser and the env checks still apply,
+	// and a non-empty AllowedCommands is not widened. It is independent of
+	// the global insecure_allow_body_blind_writes. See ArgvGateConfigured.
+	AllowAnyCommand bool `mapstructure:"allow_any_command"`
 }
 
 // ImagePullRequestBodyConfig configures inspection for POST /images/create.
@@ -933,6 +950,11 @@ type NetworkRequestBodyConfig struct {
 	// already attached to it. See filter/libpod_network.go's
 	// inspectLibpodUpdate.
 	AllowDNSServers bool `mapstructure:"allow_dns_servers"`
+	// AllowedDrivers (fork) lists the network drivers a client may create a
+	// network with or attach a container to on the Docker-compat routes.
+	// Empty means no driver check (upstream behavior). Not supported under
+	// libpod_network (a config error). See filter/fork_network_driver.go.
+	AllowedDrivers []string `mapstructure:"allowed_drivers"`
 }
 
 // EndpointConfigRequestBodyConfig configures granular per-field admission for
@@ -1106,6 +1128,9 @@ type BuildkitRequestBodyConfig struct {
 	// Session gates the services buildkitd calls back into the client for,
 	// reached over POST /session.
 	Session BuildkitSessionRequestBodyConfig `mapstructure:"session"`
+	// LLBBridge is the fork's opt-in LLBBridge passthrough on POST /grpc
+	// (buildkit_llbbridge.go). Client profiles only.
+	LLBBridge BuildkitLLBBridgeRequestBodyConfig `mapstructure:"llb_bridge"`
 }
 
 // BuildkitControlRequestBodyConfig gates moby.buildkit.v1.Control's Solve/

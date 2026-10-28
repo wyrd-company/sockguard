@@ -86,7 +86,7 @@ func denyOverlayDirOptionReason(option string, allowedBindMounts []string, subje
 	case !bindPathAllowed(normalized, allowedBindMounts):
 		return fmt.Sprintf("%s denied: overlay option %q is not allowlisted (add its directory to allowed_bind_mounts)", subject, option)
 	}
-	return ""
+	return denySymlinkedBindSourceReason(subject, "overlay directory", dir, normalized, allowedBindMounts)
 }
 
 // denyOverlayDirOptionsReason runs denyOverlayDirOptionReason over a mount's

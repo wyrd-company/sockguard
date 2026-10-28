@@ -72,6 +72,9 @@ type NetworkOptions struct {
 	// to it, including containers the caller does not own. See
 	// networkPolicy.inspectLibpodUpdate.
 	AllowDNSServers bool
+	// Drivers is the fork's allowed_drivers allowlist and its runtime
+	// network lookup. See fork_network_driver.go.
+	Drivers NetworkDriverOptions
 }
 
 type networkPolicy struct {
@@ -90,6 +93,7 @@ type networkPolicy struct {
 	allowDisconnectForce   bool
 	allowDisableIPv4       bool
 	allowDNSServers        bool
+	drivers                networkDriverPolicy
 }
 
 type networkCreateRequest struct {
@@ -167,6 +171,7 @@ func newNetworkPolicy(opts NetworkOptions) networkPolicy {
 		allowDisconnectForce:   opts.AllowDisconnectForce,
 		allowDisableIPv4:       opts.AllowDisableIPv4,
 		allowDNSServers:        opts.AllowDNSServers,
+		drivers:                newNetworkDriverPolicy(opts.Drivers),
 	}
 }
 
@@ -181,6 +186,12 @@ func (p networkPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("network denied: request body exceeds %d byte limit", maxNetworkBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
+	}
+
+	if isNetworkActionPath(normalizedPath, "connect") {
+		if reason := p.drivers.denyConnectDriverReason(r.Context(), normalizedPath, body); reason != "" {
+			return reason, nil
+		}
 	}
 
 	if len(body) == 0 {
@@ -208,6 +219,9 @@ func (p networkPolicy) inspectCreate(logger *slog.Logger, r *http.Request, body 
 
 	if driver := strings.TrimSpace(req.Driver); driver != "" && !isBuiltinNetworkDriver(driver) && !p.allowCustomDrivers {
 		return fmt.Sprintf("network create denied: driver %q is not allowed", driver), nil
+	}
+	if reason := p.drivers.denyCreateReason(req.Driver); reason != "" {
+		return reason, nil
 	}
 	if !p.allowSwarmScope && strings.EqualFold(strings.TrimSpace(req.Scope), "swarm") {
 		return "network create denied: swarm scope is not allowed", nil

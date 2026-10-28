@@ -27,6 +27,9 @@ permissions: {}
 
 jobs:
   released:
+    # Fork: upstream-only. The fork's main carries fork commits past the last
+    # upstream release tag, so this monitor would always fail there.
+    if: github.repository == 'CodesWhat/sockguard'
     permissions:
       contents: read  # Read main and its tags.
     uses: CodesWhat/.github/.github/workflows/main-is-released.yml@11004e42d7d19e86eb3b7777c467ec9522b784e1  # main 2026-08-21

@@ -1,0 +1,187 @@
+name: "Fork CI"
+
+# The wyrd-company fork's only active CI. Upstream's workflows stay in the tree
+# unchanged so rebases stay clean, and are disabled in the repository's Actions
+# settings: they call third-party actions and CodesWhat reusable workflows the
+# fork does not run. This workflow runs the fork's test, lint and build gates
+# with GitHub-owned actions and the Go toolchain only. It publishes nothing.
+
+on:
+  push:
+    branches: [main, wyrd, 'epic/*']
+  pull_request:
+    branches: [main, wyrd, 'epic/*']
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go-test:
+    name: "Go Test"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          # Caches are off in every fork job so no cache written here can be
+          # restored by a later workflow (zizmor cache-poisoning).
+          cache: false
+
+      # The imagefetch tests resolve registry credentials through the Docker
+      # keychain. An empty Docker config directory keeps whatever the runner
+      # has in ~/.docker (a credential helper, say) out of those tests.
+      - name: Go test (race, coverage floor)
+        run: |
+          DOCKER_CONFIG="$(mktemp -d)"
+          export DOCKER_CONFIG
+          ./scripts/ci/go-test.sh
+
+  go-lint:
+    name: "Go Lint"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # gofmt, then golangci-lint at the version scripts/ci/go-lint.sh pins.
+      - name: Go lint
+        run: ./scripts/ci/go-lint.sh
+
+  go-build:
+    name: "Go Build"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build sockguard
+        run: go build -o "$RUNNER_TEMP/sockguard" ./app/cmd/sockguard/
+
+      # Tagged integration packages have no default-build files, so ./... never
+      # compiles them. Compile both tag boundaries without running them.
+      - name: Compile tagged integration packages
+        working-directory: app
+        run: |
+          go test -run='^$' -tags=integration ./integration/...
+          go test -run='^$' -tags=podmanintegration ./integration/... ./internal/cmd/...
+
+  docker-build:
+    name: "Docker Build"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner's own Docker engine builds the image. Nothing is tagged for
+      # a registry and nothing is pushed.
+      - name: Build image (no push)
+        run: docker build --tag sockguard:fork-ci .
+
+  acceptance:
+    name: "Real Docker Acceptance (${{ matrix.store }})"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      ACCEPTANCE_DAEMON_IMAGE: docker:29.9.2-dind
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [containerd, classic]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # The ephemeral job owns this prerequisite as runner infrastructure.
+      # Preparation must finish before the suite's protected inventory baseline.
+      - name: Prepare acceptance bootstrap image
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/acceptance"
+          docker pull "$ACCEPTANCE_DAEMON_IMAGE" 2>&1 | tee "$RUNNER_TEMP/acceptance/bootstrap-prepare.log"
+
+      # The owned dind daemon gives every scratch path the same real spelling
+      # in the runner, daemon and proxy mount namespaces. No shared daemon
+      # configuration changes, registry login, release or publish occurs.
+      - name: Real daemon acceptance
+        env:
+          ACCEPTANCE_STORE: ${{ matrix.store }}
+          ACCEPTANCE_EVIDENCE_ROOT: ${{ runner.temp }}/acceptance
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/acceptance"
+          ./tests/acceptance/run.sh 2>&1 | tee "$RUNNER_TEMP/acceptance/output.log"
+
+      - name: Retain acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: acceptance-${{ matrix.store }}
+          path: ${{ runner.temp }}/acceptance
+          if-no-files-found: error
+
+  node:
+    name: "Biome and Script Tests"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+          # setup-node turns on npm caching because package.json declares
+          # "packageManager"; it is turned off for the same reason as Go.
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Biome
+        run: npx biome check .
+
+      - name: Workspace and script tests
+        run: npm test

@@ -1,3 +1,6 @@
 # Security-sensitive proxy, policy, release, and website changes all require a
 # review from a maintainer with write access.
-* @scttbnsn @ALARGECOMPANY @biggest-littlest
+#
+# Fork: the upstream maintainers do not have access to this repository, so
+# their entries are replaced by the fork's final reviewer.
+* @boblangley

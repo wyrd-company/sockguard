@@ -1,6 +1,7 @@
 package buildkitproxy
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -95,6 +96,10 @@ type Session struct {
 	mu               sync.Mutex
 	Refs             map[string]*RefState
 	buildkitSessions map[string]struct{}
+
+	// refChanged is a registry-locked notification generation. Waiting Status
+	// handlers retain no registry entry or provisional ownership.
+	refChanged chan struct{}
 }
 
 // tryPutRef atomically checks the per-session cap (maxRefs <= 0 disables it)
@@ -261,6 +266,7 @@ func (r *SessionRegistry) Open(key SessionKey, endpoint Endpoint, clientUUID str
 		OpenedAt:         time.Now(),
 		Refs:             make(map[string]*RefState),
 		buildkitSessions: make(map[string]struct{}),
+		refChanged:       make(chan struct{}),
 	}
 	r.sessions[s.ID] = s
 	return s
@@ -286,6 +292,7 @@ func (r *SessionRegistry) Close(id uint64) {
 		return
 	}
 	delete(r.sessions, id)
+	close(s.refChanged)
 
 	refs := s.refsSnapshot()
 	owners := r.refOwners[s.Key]
@@ -355,6 +362,7 @@ func (r *SessionRegistry) PutRef(s *Session, ref string, maxRefs int) bool {
 		r.refOwners[s.Key] = owners
 	}
 	owners[ref]++
+	r.notifyRefAdmissionLocked(s.Key)
 	return true
 }
 
@@ -447,6 +455,7 @@ func (r *SessionRegistry) admitSolve(s *Session, buildkitSessionID, ref string, 
 			ids[id] = uploadKeyState{ExpiresAt: now.Add(uploadKeyTTL)}
 		}
 	}
+	r.notifyRefAdmissionLocked(s.Key)
 	return solveAdmissionSucceeded
 }
 
@@ -494,6 +503,45 @@ func (r *SessionRegistry) OwnsRef(key SessionKey, ref string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.refOwners[key][ref] > 0
+}
+
+// waitForRef waits for admission without creating ownership. The live HTTP/2
+// handler retains the frame under the existing concurrent-stream and message
+// bounds; cancellation or registry session closure ends the wait. Notification
+// and ownership publication share r.mu so admission cannot be missed.
+func (r *SessionRegistry) waitForRef(ctx context.Context, s *Session, ref string) bool {
+	if ref == "" || len(ref) > maxBuildkitRefBytes {
+		return false
+	}
+	for {
+		r.mu.Lock()
+		open := r.sessions[s.ID] == s
+		owned := r.refOwners[s.Key][ref] > 0
+		changed := s.refChanged
+		r.mu.Unlock()
+		if !open || ctx.Err() != nil {
+			return false
+		}
+		if owned {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-changed:
+		}
+	}
+}
+
+// notifyRefAdmissionLocked wakes only the admitting principal/profile's open
+// tunnels. Each waiter rechecks its own ref and session under the registry lock.
+func (r *SessionRegistry) notifyRefAdmissionLocked(key SessionKey) {
+	for _, s := range r.sessions {
+		if s.Key == key {
+			close(s.refChanged)
+			s.refChanged = make(chan struct{})
+		}
+	}
 }
 
 // HasAdmittedSolve reports whether key and buildkitSessionID have admitted at

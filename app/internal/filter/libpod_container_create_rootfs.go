@@ -60,10 +60,9 @@ import (
 
 // denyHostPathReason holds rootfs, every overlay_volumes source, every overlay
 // upper and work directory and init_path to allowedBindMounts, and refuses
-// conmon_pid_file outright. It returns the first deny reason, or "" when every
-// host-path field is allowed. Malformed shapes of these fields fail the single
-// json.Unmarshal in inspect before this runs, so they're already denied as
-// malformed.
+// conmon_pid_file and custom base_hosts_file paths outright. It returns the
+// first deny reason, or "" when every host-path field is allowed. Malformed
+// shapes fail the JSON decode in inspect before this runs.
 func (p libpodContainerCreatePolicy) denyHostPathReason(req libpodContainerCreateRequest) string {
 	if denyReason := p.denyRootfsReason(req.Rootfs, req.RootfsOverlay); denyReason != "" {
 		return denyReason
@@ -76,6 +75,9 @@ func (p libpodContainerCreatePolicy) denyHostPathReason(req libpodContainerCreat
 	}
 	if denyReason := p.denyInitPathReason(req.InitPath); denyReason != "" {
 		return denyReason
+	}
+	if !isLibpodHostsFileSelector(req.BaseHostsFile) {
+		return "libpod container create denied: setting base_hosts_file to a host path is not allowed"
 	}
 	return p.denyConmonPidFileReason(req.ConmonPidFile)
 }
@@ -91,8 +93,12 @@ func (p libpodContainerCreatePolicy) denyRootfsReason(rootfs string, overlay boo
 	if rootfs == "" {
 		return ""
 	}
-	if source, ok := normalizeBindMount(rootfs); !ok || !bindPathAllowed(source, p.allowedBindMounts) {
+	source, ok := normalizeBindMount(rootfs)
+	if !ok || !bindPathAllowed(source, p.allowedBindMounts) {
 		return fmt.Sprintf("libpod container create denied: rootfs path %q is not allowlisted (add it to allowed_bind_mounts)", rootfs)
+	}
+	if denyReason := denySymlinkedBindSourceReason("libpod container create", "rootfs path", rootfs, source, p.allowedBindMounts); denyReason != "" {
+		return denyReason
 	}
 	if overlay && hasOverlayOptionMetacharacter(rootfs) {
 		return fmt.Sprintf("libpod container create denied: rootfs path %q contains a comma or backslash, which rootfs_overlay can't mount safely", rootfs)
@@ -108,8 +114,12 @@ func (p libpodContainerCreatePolicy) denyRootfsReason(rootfs string, overlay boo
 // metacharacter either.
 func (p libpodContainerCreatePolicy) denyOverlayVolumeReason(volumes []libpodOverlayVolume) string {
 	for _, volume := range volumes {
-		if source, ok := normalizeBindMount(volume.Source); !ok || !bindPathAllowed(source, p.allowedBindMounts) {
+		source, ok := normalizeBindMount(volume.Source)
+		if !ok || !bindPathAllowed(source, p.allowedBindMounts) {
 			return fmt.Sprintf("libpod container create denied: overlay volume source %q is not allowlisted (add it to allowed_bind_mounts)", volume.Source)
+		}
+		if denyReason := denySymlinkedBindSourceReason("libpod container create", "overlay volume source", volume.Source, source, p.allowedBindMounts); denyReason != "" {
+			return denyReason
 		}
 		if hasOverlayOptionMetacharacter(volume.Source) {
 			return fmt.Sprintf("libpod container create denied: overlay volume source %q contains a comma or backslash", volume.Source)
@@ -143,10 +153,11 @@ func (p libpodContainerCreatePolicy) denyInitPathReason(initPath string) string 
 	if initPath == "" {
 		return ""
 	}
-	if source, ok := normalizeBindMount(initPath); !ok || !bindPathAllowed(source, p.allowedBindMounts) {
+	source, ok := normalizeBindMount(initPath)
+	if !ok || !bindPathAllowed(source, p.allowedBindMounts) {
 		return fmt.Sprintf("libpod container create denied: init_path %q is not allowlisted (add it to allowed_bind_mounts)", initPath)
 	}
-	return ""
+	return denySymlinkedBindSourceReason("libpod container create", "init_path", initPath, source, p.allowedBindMounts)
 }
 
 // denyConmonPidFileReason refuses a non-empty conmon_pid_file. It's a host

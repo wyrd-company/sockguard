@@ -122,6 +122,9 @@ type PolicyConfig struct {
 	// exists and why it is deliberately not the richer buildkitproxy.Policy
 	// translation.
 	Buildkit BuildkitOptions
+	// ForkStartRecheck carries the fork's container start and restart
+	// bind-source re-check inspector (fork_start_recheck.go).
+	ForkStartRecheck ForkStartRecheckOptions
 }
 
 // Options configures filter middleware behavior.
@@ -176,9 +179,10 @@ func (o Options) normalized() Options {
 }
 
 type runtimePolicy struct {
-	rules                   []*CompiledRule
-	denyResponseVerbosity   DenyResponseVerbosity
-	inspectPoliciesByMethod map[string][]requestInspectPolicy
+	rules                    []*CompiledRule
+	denyResponseVerbosity    DenyResponseVerbosity
+	inspectPoliciesByMethod  map[string][]requestInspectPolicy
+	captureWorkspaceSnapshot func(*http.Request, string)
 }
 
 type inspectSeverity int
@@ -421,6 +425,7 @@ func runAllowedInspection(activePolicy runtimePolicy, logger *slog.Logger, w htt
 
 func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *mutationEngine) runtimePolicy {
 	cfg = cfg.normalized()
+	containerCreate := newContainerCreatePolicy(cfg.ContainerCreate)
 	all := []requestInspectPolicy{
 		// The two admission-mutation entries are registered BEFORE
 		// container_create/service in this same slice, at the same
@@ -432,7 +437,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// second, in the same request, against whatever bytes mutation left
 		// in r.Body. Neither entry needs to know the other exists.
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreateMutationPolicy(mutationEng).inspect, "failed to apply container create admission mutations", "unable to apply container create admission mutations"},
-		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
+		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, containerCreate.inspectWithWorkspaceExceptions, "failed to inspect container create request body", "unable to inspect container create request body"},
 		// libpod container-create is path-exclusive with the Docker-compat
 		// entry above (isLibpodContainerCreatePath vs
 		// matchesContainerCreateInspection never both match the same
@@ -440,6 +445,9 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// crafted body can never reach the wrong family's gates regardless
 		// of which shape it carries.
 		{http.MethodPost, matchesLibpodContainerCreateInspection, inspectSeverityCritical, newLibpodContainerCreatePolicy(cfg.LibpodContainerCreate).inspect, "failed to inspect libpod container create request body", "unable to inspect libpod container create request body"},
+		// Fork-owned: the workspace header on exec, ahead of the exec
+		// inspector in the same bucket (fork_exec_workspace.go).
+		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newForkExecWorkspacePolicy(cfg).inspect, "failed to check the exec workspace header", "unable to check the exec workspace header"},
 		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
 		// GET /distribution/{name}/json makes the daemon contact the registry
@@ -509,12 +517,20 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// request body, so it costs nothing when TunnelConfigured is false
 		// (the default).
 		{http.MethodPost, matchesBuildkitTunnelInspection, inspectSeverityCritical, newBuildkitPolicy(cfg.Buildkit).inspect, "failed to inspect buildkit tunnel request", "unable to inspect buildkit tunnel request"},
+		// Fork-owned: container start and restart re-check bind sources
+		// against the create allowlists (fork_start_recheck.go).
+		{http.MethodPost, matchesForkStartRecheckInspection, inspectSeverityCritical, newForkStartRecheckPolicy(cfg).inspect, "failed to re-check container start bind sources", "unable to re-check container start bind sources"},
 	}
 	byMethod := groupInspectPoliciesByMethod(all)
+	var captureWorkspaceSnapshot func(*http.Request, string)
+	if cfg.ContainerCreate.ApplyWorkspaceExceptions {
+		captureWorkspaceSnapshot = containerCreate.captureWorkspaceSnapshot
+	}
 	return runtimePolicy{
-		rules:                   rules,
-		denyResponseVerbosity:   cfg.DenyResponseVerbosity,
-		inspectPoliciesByMethod: byMethod,
+		rules:                    rules,
+		denyResponseVerbosity:    cfg.DenyResponseVerbosity,
+		inspectPoliciesByMethod:  byMethod,
+		captureWorkspaceSnapshot: captureWorkspaceSnapshot,
 	}
 }
 
@@ -696,6 +712,11 @@ func groupInspectPoliciesByMethod(all []requestInspectPolicy) map[string][]reque
 type inspectBuckets [3][inspectBucketCapacity]*requestInspectPolicy
 
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
+	// Fork-owned: admission precedes every supported body reader in this
+	// policy, while mutation still runs before container validation.
+	if p.captureWorkspaceSnapshot != nil {
+		p.captureWorkspaceSnapshot(r, normalizedPath)
+	}
 	var buckets inspectBuckets
 	var counts [3]int
 
